@@ -21,7 +21,9 @@ from einops import rearrange
 
 
 import comfy.ops
+
 ops = comfy.ops.disable_weight_init
+
 
 def time2batch(x: torch.Tensor) -> tuple[torch.Tensor, int]:
     batch_size = x.shape[0]
@@ -54,7 +56,8 @@ def divisible_by(num: int, den: int) -> bool:
 
 
 def is_odd(n: int) -> bool:
-    return not divisible_by(n, 2)
+    # Directly check condition to avoid function call overhead
+    return (n % 2) != 0
 
 
 def nonlinearity(x):
