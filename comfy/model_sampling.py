@@ -31,13 +31,9 @@ class EPS:
         return model_input - model_output * sigma
 
     def noise_scaling(self, sigma, noise, latent_image, max_denoise=False):
-        sigma = sigma.view(sigma.shape[:1] + (1,) * (noise.ndim - 1))
-        if max_denoise:
-            noise = noise * torch.sqrt(1.0 + sigma ** 2.0)
-        else:
-            noise = noise * sigma
-
-        noise += latent_image
+        sigma = sigma.view((-1,) + (1,) * (noise.ndim - 1))
+        scaling_factor = torch.sqrt(1.0 + sigma ** 2.0) if max_denoise else sigma
+        noise = noise * scaling_factor + latent_image
         return noise
 
     def inverse_noise_scaling(self, sigma, latent):
