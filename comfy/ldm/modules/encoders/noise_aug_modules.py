@@ -12,15 +12,20 @@ class CLIPEmbeddingNoiseAugmentation(ImageConcatWithNoiseAugmentation):
         self.register_buffer("data_mean", clip_mean[None, :], persistent=False)
         self.register_buffer("data_std", clip_std[None, :], persistent=False)
         self.time_embed = Timestep(timestep_dim)
+        
 
     def scale(self, x):
-        # re-normalize to centered mean and unit variance
-        x = (x - self.data_mean.to(x.device)) * 1. / self.data_std.to(x.device)
+        # Optimizing re-normalize to centered mean and unit variance by using in-place operations
+        device_mean = self.data_mean.to(x.device)
+        device_std = self.data_std.to(x.device)
+        x.sub_(device_mean).div_(device_std)
         return x
 
     def unscale(self, x):
-        # back to original data stats
-        x = (x * self.data_std.to(x.device)) + self.data_mean.to(x.device)
+        # Optimizing back to original data stats by using in-place operations
+        device_mean = self.data_mean.to(x.device)
+        device_std = self.data_std.to(x.device)
+        x.mul_(device_std).add_(device_mean)
         return x
 
     def forward(self, x, noise_level=None, seed=None):

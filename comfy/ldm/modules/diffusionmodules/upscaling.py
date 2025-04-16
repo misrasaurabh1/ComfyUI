@@ -41,13 +41,20 @@ class AbstractLowScaleModel(nn.Module):
         self.register_buffer('sqrt_recipm1_alphas_cumprod', to_torch(np.sqrt(1. / alphas_cumprod - 1)))
 
     def q_sample(self, x_start, t, noise=None, seed=None):
+        device = x_start.device
         if noise is None:
             if seed is None:
                 noise = torch.randn_like(x_start)
             else:
-                noise = torch.randn(x_start.size(), dtype=x_start.dtype, layout=x_start.layout, generator=torch.manual_seed(seed)).to(x_start.device)
-        return (extract_into_tensor(self.sqrt_alphas_cumprod.to(x_start.device), t, x_start.shape) * x_start +
-                extract_into_tensor(self.sqrt_one_minus_alphas_cumprod.to(x_start.device), t, x_start.shape) * noise)
+                noise = torch.randn(x_start.size(), dtype=x_start.dtype, layout=x_start.layout, generator=torch.manual_seed(seed)).to(device)
+                
+        sqrt_alphas_cumprod = self.sqrt_alphas_cumprod.to(device)
+        sqrt_one_minus_alphas_cumprod = self.sqrt_one_minus_alphas_cumprod.to(device)
+        
+        alpha_t = extract_into_tensor(sqrt_alphas_cumprod, t, x_start.shape)
+        one_minus_alpha_t = extract_into_tensor(sqrt_one_minus_alphas_cumprod, t, x_start.shape)
+
+        return (alpha_t * x_start + one_minus_alpha_t * noise)
 
     def forward(self, x):
         return x, None
