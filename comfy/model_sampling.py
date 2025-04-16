@@ -97,6 +97,7 @@ class ModelSamplingDiscrete(torch.nn.Module):
 
         self._register_schedule(given_betas=None, beta_schedule=beta_schedule, timesteps=timesteps, linear_start=linear_start, linear_end=linear_end, cosine_s=8e-3, zsnr=zsnr)
         self.sigma_data = 1.0
+        self._log_sigmas_cache = {}
 
     def _register_schedule(self, given_betas=None, beta_schedule="linear", timesteps=1000,
                           linear_start=1e-4, linear_end=2e-2, cosine_s=8e-3, zsnr=False):
@@ -140,12 +141,20 @@ class ModelSamplingDiscrete(torch.nn.Module):
         return dists.abs().argmin(dim=0).view(sigma.shape).to(sigma.device)
 
     def sigma(self, timestep):
-        t = torch.clamp(timestep.float().to(self.log_sigmas.device), min=0, max=(len(self.sigmas) - 1))
+        if isinstance(timestep, torch.Tensor) and timestep.item() in self._log_sigmas_cache:
+            return self._log_sigmas_cache[timestep.item()]
+
+        t = torch.clamp(timestep.float().to(self.log_sigmas.device), min=0, max=len(self.sigmas) - 1)
         low_idx = t.floor().long()
         high_idx = t.ceil().long()
-        w = t.frac()
+        w = t - low_idx
         log_sigma = (1 - w) * self.log_sigmas[low_idx] + w * self.log_sigmas[high_idx]
-        return log_sigma.exp().to(timestep.device)
+        sigma_value = log_sigma.exp().to(timestep.device)
+
+        if isinstance(timestep, torch.Tensor):
+            self._log_sigmas_cache[timestep.item()] = sigma_value
+
+        return sigma_value
 
     def percent_to_sigma(self, percent):
         if percent <= 0.0:
