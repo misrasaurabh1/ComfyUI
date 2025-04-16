@@ -58,7 +58,8 @@ class CONST:
         return noise
 
     def calculate_denoised(self, sigma, model_output, model_input):
-        sigma = sigma.view(sigma.shape[:1] + (1,) * (model_output.ndim - 1))
+        if sigma.ndim != model_output.ndim:
+            sigma = sigma.view(*sigma.shape, *([1] * (model_output.ndim - sigma.ndim)))
         return model_input - model_output * sigma
 
     def noise_scaling(self, sigma, noise, latent_image, max_denoise=False):
