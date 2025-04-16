@@ -283,16 +283,20 @@ class StableCascadeSampling(ModelSamplingDiscrete):
         self.set_sigmas(sigmas)
 
     def sigma(self, timestep):
-        alpha_cumprod = (torch.cos((timestep + self.cosine_s) / (1 + self.cosine_s) * torch.pi * 0.5) ** 2 / self._init_alpha_cumprod)
+        # Cache some values to avoid recalculating them in each function call
+        cosine_half_pi = torch.pi * 0.5
+        one_plus_cosine_s = 1 + self.cosine_s
+
+        # Use in-place operations where possible
+        alpha_cumprod = torch.cos_((timestep + self.cosine_s) / one_plus_cosine_s * cosine_half_pi).pow_(2).div_(self._init_alpha_cumprod)
 
         if self.shift != 1.0:
             var = alpha_cumprod
-            logSNR = (var/(1-var)).log()
-            logSNR += 2 * torch.log(1.0 / torch.tensor(self.shift))
-            alpha_cumprod = logSNR.sigmoid()
+            logSNR = (var/(1-var)).log_().add_(2 * torch.log(1.0 / torch.tensor(self.shift)))
+            alpha_cumprod = logSNR.sigmoid_()
 
-        alpha_cumprod = alpha_cumprod.clamp(0.0001, 0.9999)
-        return ((1 - alpha_cumprod) / alpha_cumprod) ** 0.5
+        alpha_cumprod = alpha_cumprod.clamp_(0.0001, 0.9999)
+        return ((1 - alpha_cumprod) / alpha_cumprod).sqrt_()
 
     def timestep(self, sigma):
         var = 1 / ((sigma * sigma) + 1)
