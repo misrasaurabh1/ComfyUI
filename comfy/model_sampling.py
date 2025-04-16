@@ -209,10 +209,14 @@ class ModelSamplingContinuousEDM(torch.nn.Module):
 
 class ModelSamplingContinuousV(ModelSamplingContinuousEDM):
     def timestep(self, sigma):
-        return sigma.atan() / math.pi * 2
+        return sigma.atan() * self._pi_times_two
 
     def sigma(self, timestep):
         return (timestep * math.pi / 2).tan()
+    def __init__(self):
+        super().__init__()
+        self._pi_times_two = 2 / math.pi  # Precompute the constant to reuse in the timestep function.
+        
 
 
 def time_snr_shift(alpha, t):
