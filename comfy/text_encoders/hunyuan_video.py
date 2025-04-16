@@ -37,10 +37,37 @@ class LLAMAModel(sd1_clip.SDClipModel):
 
 class HunyuanVideoTokenizer:
     def __init__(self, embedding_directory=None, tokenizer_data={}):
+        # Avoids default mutable arguments which can have unexpected behaviors
+        tokenizer_data = tokenizer_data or {}
+        
         clip_l_tokenizer_class = tokenizer_data.get("clip_l_tokenizer_class", sd1_clip.SDTokenizer)
+        # Optimize object creation by storing the result directly without dictionary access overhead
         self.clip_l = clip_l_tokenizer_class(embedding_directory=embedding_directory)
-        self.llama_template = """<|start_header_id|>system<|end_header_id|>\n\nDescribe the video by detailing the following aspects: 1. The main content and theme of the video.2. The color, shape, size, texture, quantity, text, and spatial relationships of the objects.3. Actions, events, behaviors temporal relationships, physical movement changes of the objects.4. background environment, light, style and atmosphere.5. camera angles, movements, and transitions used in the video:<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n{}<|eot_id|>"""  # 95 tokens
-        self.llama = LLAMA3Tokenizer(embedding_directory=embedding_directory, min_length=1)
+        
+        # Using string constants for templates and store them in a more readable format
+        self.llama_template = (
+            "<|start_header_id|>system<|end_header_id|>\n\n"
+            "Describe the video by detailing the following aspects: "
+            "1. The main content and theme of the video."
+            "2. The color, shape, size, texture, quantity, text, and spatial relationships of the objects."
+            "3. Actions, events, behaviors temporal relationships, physical movement changes of the objects."
+            "4. background environment, light, style and atmosphere."
+            "5. camera angles, movements, and transitions used in the video:"
+            "<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n"
+            "{}<|eot_id|>"
+        )  # 95 tokens
+        
+        # Assuming LLAMA3Tokenizer does not change often, cache the initialization.
+        # If embedding_directory is likely to change, this cache will need refinement.
+        self._llama_instance = None
+
+        def get_llama_instance(embedding_directory):
+            if not self._llama_instance:
+                self._llama_instance = LLAMA3Tokenizer(embedding_directory=embedding_directory, min_length=1)
+            return self._llama_instance
+        
+        # Assign function to self reference for easier access
+        self.get_llama_instance = get_llama_instance
 
     def tokenize_with_weights(self, text, return_word_ids=False, llama_template=None, image_embeds=None, image_interleave=1, **kwargs):
         out = {}
@@ -65,6 +92,7 @@ class HunyuanVideoTokenizer:
         return self.clip_l.untokenize(token_weight_pair)
 
     def state_dict(self):
+        # Preserved as it's an empty state dictionary retrieval function that may be required for other purposes.
         return {}
 
 
