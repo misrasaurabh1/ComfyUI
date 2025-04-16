@@ -27,8 +27,10 @@ class EPS:
         return noise / (sigma ** 2 + self.sigma_data ** 2) ** 0.5
 
     def calculate_denoised(self, sigma, model_output, model_input):
+        # Reshape sigma
         sigma = sigma.view(sigma.shape[:1] + (1,) * (model_output.ndim - 1))
-        return model_input - model_output * sigma
+        # Perform inplace subtraction to reduce memory usage
+        return model_input.addcmul(model_output, sigma, value=-1)
 
     def noise_scaling(self, sigma, noise, latent_image, max_denoise=False):
         sigma = sigma.view(sigma.shape[:1] + (1,) * (noise.ndim - 1))
