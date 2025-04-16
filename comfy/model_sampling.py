@@ -174,6 +174,12 @@ class ModelSamplingContinuousEDM(torch.nn.Module):
         sigma_max = sampling_settings.get("sigma_max", 120.0)
         sigma_data = sampling_settings.get("sigma_data", 1.0)
         self.set_parameters(sigma_min, sigma_max, sigma_data)
+        
+        # Precompute log(sigma_min) and log(sigma_max)
+        self.log_sigma_min = math.log(self.sigma_min)
+        self.log_sigma_max = math.log(self.sigma_max)
+        
+        self.log_sigma_range = self.log_sigma_max - self.log_sigma_min  # Compute the range for reuse
 
     def set_parameters(self, sigma_min, sigma_max, sigma_data):
         self.sigma_data = sigma_data
@@ -201,10 +207,9 @@ class ModelSamplingContinuousEDM(torch.nn.Module):
             return 999999999.9
         if percent >= 1.0:
             return 0.0
+        
         percent = 1.0 - percent
-
-        log_sigma_min = math.log(self.sigma_min)
-        return math.exp((math.log(self.sigma_max) - log_sigma_min) * percent + log_sigma_min)
+        return math.exp(self.log_sigma_range * percent + self.log_sigma_min)
 
 
 class ModelSamplingContinuousV(ModelSamplingContinuousEDM):
