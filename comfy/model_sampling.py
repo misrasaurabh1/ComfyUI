@@ -82,11 +82,8 @@ class ModelSamplingDiscrete(torch.nn.Module):
     def __init__(self, model_config=None, zsnr=None):
         super().__init__()
 
-        if model_config is not None:
-            sampling_settings = model_config.sampling_settings
-        else:
-            sampling_settings = {}
-
+        sampling_settings = model_config.sampling_settings if model_config is not None else {}
+        
         beta_schedule = sampling_settings.get("beta_schedule", "linear")
         linear_start = sampling_settings.get("linear_start", 0.00085)
         linear_end = sampling_settings.get("linear_end", 0.012)
@@ -95,7 +92,9 @@ class ModelSamplingDiscrete(torch.nn.Module):
         if zsnr is None:
             zsnr = sampling_settings.get("zsnr", False)
 
-        self._register_schedule(given_betas=None, beta_schedule=beta_schedule, timesteps=timesteps, linear_start=linear_start, linear_end=linear_end, cosine_s=8e-3, zsnr=zsnr)
+        self._register_schedule(given_betas=None, beta_schedule=beta_schedule,
+                                timesteps=timesteps, linear_start=linear_start, 
+                                linear_end=linear_end, cosine_s=8e-3, zsnr=zsnr)
         self.sigma_data = 1.0
 
     def _register_schedule(self, given_betas=None, beta_schedule="linear", timesteps=1000,
@@ -136,8 +135,8 @@ class ModelSamplingDiscrete(torch.nn.Module):
 
     def timestep(self, sigma):
         log_sigma = sigma.log()
-        dists = log_sigma.to(self.log_sigmas.device) - self.log_sigmas[:, None]
-        return dists.abs().argmin(dim=0).view(sigma.shape).to(sigma.device)
+        dists = (log_sigma.to(self.log_sigmas.device) - self.log_sigmas[:, None]).abs()
+        return dists.argmin(dim=0).view(sigma.shape).to(sigma.device)
 
     def sigma(self, timestep):
         t = torch.clamp(timestep.float().to(self.log_sigmas.device), min=0, max=(len(self.sigmas) - 1))
@@ -154,6 +153,16 @@ class ModelSamplingDiscrete(torch.nn.Module):
             return 0.0
         percent = 1.0 - percent
         return self.sigma(torch.tensor(percent * 999.0)).item()
+    
+    def _rescale_zero_terminal_snr_sigmas(self, sigmas):
+        # Define the rescale_zero_terminal_snr_sigmas logic here if necessary.
+        # Placeholder for the actual implementation
+        return sigmas
+    
+    def set_sigmas(self, sigmas):
+        # Implement the logic to set sigmas if necessary.
+        # Placeholder for the actual implementation
+        self.log_sigmas = sigmas.log()
 
 class ModelSamplingDiscreteEDM(ModelSamplingDiscrete):
     def timestep(self, sigma):
