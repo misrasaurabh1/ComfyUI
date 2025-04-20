@@ -12,8 +12,7 @@ import comfy.model_patcher
 import comfy.model_sampling
 
 def append_zero(x):
-    # Replace x.new_zeros with a more efficient torch.zeros method
-    return torch.cat((x, torch.zeros(1, device=x.device)))
+    return torch.cat([x, x.new_zeros([1])])
 
 
 def get_sigmas_karras(n, sigma_min, sigma_max, rho=7., device='cpu'):
