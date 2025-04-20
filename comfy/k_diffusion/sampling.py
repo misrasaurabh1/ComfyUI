@@ -428,27 +428,39 @@ class DPMSolver(nn.Module):
         self.extra_args = {} if extra_args is None else extra_args
         self.eps_callback = eps_callback
         self.info_callback = info_callback
+        self._sigma_cache = {}
 
     def t(self, sigma):
         return -sigma.log()
 
     def sigma(self, t):
-        return t.neg().exp()
+        if t in self._sigma_cache:
+            return self._sigma_cache[t]
+        sigma_val = t.neg().exp()
+        self._sigma_cache[t] = sigma_val
+        return sigma_val
 
     def eps(self, eps_cache, key, x, t, *args, **kwargs):
         if key in eps_cache:
             return eps_cache[key], eps_cache
-        sigma = self.sigma(t) * x.new_ones([x.shape[0]])
-        eps = (x - self.model(x, sigma, *args, **self.extra_args, **kwargs)) / self.sigma(t)
+        
+        sigma_value = self.sigma(t)
+        sigma = sigma_value * x.new_ones([x.shape[0]])
+        model_output = self.model(x, sigma, *args, **self.extra_args, **kwargs)
+        eps = (x - model_output) / sigma_value
+        
         if self.eps_callback is not None:
             self.eps_callback()
+        
         return eps, {key: eps, **eps_cache}
 
     def dpm_solver_1_step(self, x, t, t_next, eps_cache=None):
         eps_cache = {} if eps_cache is None else eps_cache
         h = t_next - t
         eps, eps_cache = self.eps(eps_cache, 'eps', x, t)
-        x_1 = x - self.sigma(t_next) * h.expm1() * eps
+        sigma_t_next = self.sigma(t_next)
+        expm1_h = h.expm1()
+        x_1 = x - sigma_t_next * expm1_h * eps
         return x_1, eps_cache
 
     def dpm_solver_2_step(self, x, t, t_next, r1=1 / 2, eps_cache=None):
