@@ -57,7 +57,7 @@ def get_sigmas_laplace(n, sigma_min, sigma_max, mu=0., beta=0.5, device='cpu'):
 
 def to_d(x, sigma, denoised):
     """Converts a denoiser output to a Karras ODE derivative."""
-    return (x - denoised) / utils.append_dims(sigma, x.ndim)
+    return (x - denoised) / sigma_appended
 
 
 def get_ancestral_step(sigma_from, sigma_to, eta=1.):
@@ -71,13 +71,12 @@ def get_ancestral_step(sigma_from, sigma_to, eta=1.):
 
 
 def default_noise_sampler(x, seed=None):
+    generator = None
     if seed is not None:
         generator = torch.Generator(device=x.device)
         generator.manual_seed(seed)
-    else:
-        generator = None
 
-    return lambda sigma, sigma_next: torch.randn(x.size(), dtype=x.dtype, layout=x.layout, device=x.device, generator=generator)
+    return lambda size: torch.randn(size, dtype=x.dtype, layout=x.layout, device=x.device, generator=generator)
 
 
 class BatchedBrownianTree:
@@ -1279,6 +1278,7 @@ def res_multistep(model, x, sigmas, extra_args=None, callback=None, disable=None
 
     old_denoised = None
     uncond_denoised = None
+    
     def post_cfg_function(args):
         nonlocal uncond_denoised
         uncond_denoised = args["uncond_denoised"]
@@ -1288,44 +1288,45 @@ def res_multistep(model, x, sigmas, extra_args=None, callback=None, disable=None
         model_options = extra_args.get("model_options", {}).copy()
         extra_args["model_options"] = comfy.model_patcher.set_model_options_post_cfg_function(model_options, post_cfg_function, disable_cfg1_optimization=True)
 
-    for i in trange(len(sigmas) - 1, disable=disable):
-        denoised = model(x, sigmas[i] * s_in, **extra_args)
-        sigma_down, sigma_up = get_ancestral_step(sigmas[i], sigmas[i + 1], eta=eta)
-        if callback is not None:
-            callback({"x": x, "i": i, "sigma": sigmas[i], "sigma_hat": sigmas[i], "denoised": denoised})
+    sigmas_len = len(sigmas) - 1
+
+    for i in trange(sigmas_len, disable=disable):
+        sigma_i = sigmas[i]
+        sigma_i_next = sigmas[i + 1]
+
+        if callback:
+            callback({"x": x, "i": i, "sigma": sigma_i, "sigma_hat": sigma_i, "denoised": denoised})
+
+        denoised = model(x, sigma_i * s_in, **extra_args)
+        
+        if sigma_i_next <= 0:
+            continue
+
+        sigma_down, sigma_up = get_ancestral_step(sigma_i, sigma_i_next, eta=eta)
+
         if sigma_down == 0 or old_denoised is None:
-            # Euler method
-            if cfg_pp:
-                d = to_d(x, sigmas[i], uncond_denoised)
-                x = denoised + d * sigma_down
-            else:
-                d = to_d(x, sigmas[i], denoised)
-                dt = sigma_down - sigmas[i]
-                x = x + d * dt
+            d = to_d(x, sigma_i, uncond_denoised if cfg_pp else denoised)
+            dt = sigma_down - sigma_i
+            x = x.add_(d, alpha=dt)
         else:
-            # Second order multistep method in https://arxiv.org/pdf/2308.02157
-            t, t_next, t_prev = t_fn(sigmas[i]), t_fn(sigma_down), t_fn(sigmas[i - 1])
+            t, t_next = t_fn(sigma_i), t_fn(sigma_down)
+            t_prev = t_fn(sigmas[i - 1])
             h = t_next - t
             c2 = (t_prev - t) / h
 
-            phi1_val, phi2_val = phi1_fn(-h), phi2_fn(-h)
+            phi1_val = phi1_fn(-h)
+            phi2_val = phi2_fn(-h)
             b1 = torch.nan_to_num(phi1_val - phi2_val / c2, nan=0.0)
             b2 = torch.nan_to_num(phi2_val / c2, nan=0.0)
 
-            if cfg_pp:
-                x = x + (denoised - uncond_denoised)
-                x = sigma_fn(h) * x + h * (b1 * uncond_denoised + b2 * old_denoised)
-            else:
-                x = sigma_fn(h) * x + h * (b1 * denoised + b2 * old_denoised)
+            x.add_(denoised - uncond_denoised if cfg_pp else 0)
+            x.mul_(sigma_fn(h)).add_(h * (b1 * uncond_denoised + b2 * old_denoised) if cfg_pp else h * (b1 * denoised + b2 * old_denoised))
+          
+        noise = noise_sampler(sigma_i, sigma_i_next).mul_(s_noise * sigma_up)
+        x.add_(noise)
 
-        # Noise addition
-        if sigmas[i + 1] > 0:
-            x = x + noise_sampler(sigmas[i], sigmas[i + 1]) * s_noise * sigma_up
+        old_denoised = uncond_denoised if cfg_pp else denoised
 
-        if cfg_pp:
-            old_denoised = uncond_denoised
-        else:
-            old_denoised = denoised
     return x
 
 @torch.no_grad()
@@ -1351,20 +1352,28 @@ def sample_gradient_estimation(model, x, sigmas, extra_args=None, callback=None,
     s_in = x.new_ones([x.shape[0]])
     old_d = None
 
+    sigma_shape_expanded = utils.append_dims(s_in, x.ndim)
+
     for i in trange(len(sigmas) - 1, disable=disable):
-        denoised = model(x, sigmas[i] * s_in, **extra_args)
-        d = to_d(x, sigmas[i], denoised)
+        sigma_scaled = sigmas[i] * sigma_shape_expanded
+        denoised = model(x, sigma_scaled, **extra_args)
+        sigma_appended = utils.append_dims(sigmas[i], x.ndim)
+        d = to_d(x, sigmas[i], denoised, sigma_appended)
+
         if callback is not None:
             callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigmas[i], 'denoised': denoised})
+
         dt = sigmas[i + 1] - sigmas[i]
         if i == 0:
             # Euler method
-            x = x + d * dt
+            x += d * dt
         else:
             # Gradient estimation
             d_bar = ge_gamma * d + (1 - ge_gamma) * old_d
-            x = x + d_bar * dt
+            x += d_bar * dt
+        
         old_d = d
+
     return x
 
 @torch.no_grad()
@@ -1373,62 +1382,63 @@ def sample_er_sde(model, x, sigmas, extra_args=None, callback=None, disable=None
     Extended Reverse-Time SDE solver (VE ER-SDE-Solver-3). Arxiv: https://arxiv.org/abs/2309.06169.
     Code reference: https://github.com/QinpengCui/ER-SDE-Solver/blob/main/er_sde_solver.py.
     """
-    extra_args = {} if extra_args is None else extra_args
+    extra_args = extra_args if extra_args is not None else {}
     seed = extra_args.get("seed", None)
-    noise_sampler = default_noise_sampler(x, seed=seed) if noise_sampler is None else noise_sampler
-    s_in = x.new_ones([x.shape[0]])
+    noise_sampler = noise_sampler if noise_sampler is not None else default_noise_sampler(x, seed)
+    s_in = torch.ones([x.shape[0]], dtype=x.dtype, device=x.device)
 
     def default_noise_scaler(sigma):
         return sigma * ((sigma ** 0.3).exp() + 10.0)
-    noise_scaler = default_noise_scaler if noise_scaler is None else noise_scaler
-    num_integration_points = 200.0
+    noise_scaler = noise_scaler if noise_scaler is not None else default_noise_scaler
+
+    num_integration_points = 200
     point_indice = torch.arange(0, num_integration_points, dtype=torch.float32, device=x.device)
-
-    old_denoised = None
-    old_denoised_d = None
-
+    
     for i in trange(len(sigmas) - 1, disable=disable):
-        denoised = model(x, sigmas[i] * s_in, **extra_args)
-        if callback is not None:
-            callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigmas[i], 'denoised': denoised})
-        stage_used = min(max_stage, i + 1)
-        if sigmas[i + 1] == 0:
+        sigma_i, sigma_next = sigmas[i], sigmas[i + 1]
+        denoised = model(x, sigma_i * s_in, **extra_args)
+        
+        if callback:
+            callback({'x': x, 'i': i, 'sigma': sigma_i, 'sigma_hat': sigma_i, 'denoised': denoised})
+
+        if sigma_next == 0:
             x = denoised
-        elif stage_used == 1:
-            r = noise_scaler(sigmas[i + 1]) / noise_scaler(sigmas[i])
-            x = r * x + (1 - r) * denoised
         else:
-            r = noise_scaler(sigmas[i + 1]) / noise_scaler(sigmas[i])
+            r = noise_scaler(sigma_next) / noise_scaler(sigma_i)
             x = r * x + (1 - r) * denoised
 
-            dt = sigmas[i + 1] - sigmas[i]
-            sigma_step_size = -dt / num_integration_points
-            sigma_pos = sigmas[i + 1] + point_indice * sigma_step_size
-            scaled_pos = noise_scaler(sigma_pos)
+            if max_stage > 1:
+                dt = sigma_next - sigma_i
+                sigma_step_size = -dt / num_integration_points
+                sigma_pos = sigma_next + point_indice * sigma_step_size
+                inv_scaled_pos = torch.reciprocal(noise_scaler(sigma_pos))
+                s = torch.sum(inv_scaled_pos) * sigma_step_size
 
-            # Stage 2
-            s = torch.sum(1 / scaled_pos) * sigma_step_size
-            denoised_d = (denoised - old_denoised) / (sigmas[i] - sigmas[i - 1])
-            x = x + (dt + s * noise_scaler(sigmas[i + 1])) * denoised_d
+                if i > 0:
+                    denoised_d = (denoised - old_denoised) / (sigma_i - sigmas[i - 1])
+                    x = x + (dt + s * noise_scaler(sigma_next)) * denoised_d
 
-            if stage_used >= 3:
-                # Stage 3
-                s_u = torch.sum((sigma_pos - sigmas[i]) / scaled_pos) * sigma_step_size
-                denoised_u = (denoised_d - old_denoised_d) / ((sigmas[i] - sigmas[i - 2]) / 2)
-                x = x + ((dt ** 2) / 2 + s_u * noise_scaler(sigmas[i + 1])) * denoised_u
-            old_denoised_d = denoised_d
+                    if max_stage > 2 and i > 1:
+                        s_u = torch.sum((sigma_pos - sigma_i) * inv_scaled_pos) * sigma_step_size
+                        denoised_u = (denoised_d - old_denoised_d) / ((sigma_i - sigmas[i - 2]) / 2)
+                        x = x + (dt ** 2 / 2 + s_u * noise_scaler(sigma_next)) * denoised_u
+                    old_denoised_d = denoised_d
+        
+        if s_noise != 0 and sigma_next > 0:
+            noise = noise_sampler(sigma_i, sigma_next)
+            noise_term = s_noise * (sigma_next ** 2 - (sigma_i * r) ** 2).sqrt()
+            x = x + noise * noise_term.nan_to_num(nan=0.0)
 
-        if s_noise != 0 and sigmas[i + 1] > 0:
-            x = x + noise_sampler(sigmas[i], sigmas[i + 1]) * s_noise * (sigmas[i + 1] ** 2 - sigmas[i] ** 2 * r ** 2).sqrt().nan_to_num(nan=0.0)
         old_denoised = denoised
+
     return x
 
 @torch.no_grad()
 def sample_seeds_2(model, x, sigmas, extra_args=None, callback=None, disable=None, eta=1., s_noise=1., noise_sampler=None, r=0.5):
-    '''
+    """
     SEEDS-2 - Stochastic Explicit Exponential Derivative-free Solvers (VE Data Prediction) stage 2
     Arxiv: https://arxiv.org/abs/2305.14267
-    '''
+    """
     extra_args = {} if extra_args is None else extra_args
     seed = extra_args.get("seed", None)
     noise_sampler = default_noise_sampler(x, seed=seed) if noise_sampler is None else noise_sampler
@@ -1437,36 +1447,41 @@ def sample_seeds_2(model, x, sigmas, extra_args=None, callback=None, disable=Non
     inject_noise = eta > 0 and s_noise > 0
 
     for i in trange(len(sigmas) - 1, disable=disable):
-        denoised = model(x, sigmas[i] * s_in, **extra_args)
+        sigma_i = sigmas[i]
+        sigma_next = sigmas[i + 1]
+        
+        denoised = model(x, sigma_i * s_in, **extra_args)
         if callback is not None:
-            callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigmas[i], 'denoised': denoised})
-        if sigmas[i + 1] == 0:
+            callback({'x': x, 'i': i, 'sigma': sigma_i, 'sigma_hat': sigma_i, 'denoised': denoised})
+        if sigma_next == 0:
             x = denoised
         else:
-            t, t_next = -sigmas[i].log(), -sigmas[i + 1].log()
+            t, t_next = -sigma_i.log(), -sigma_next.log()
             h = t_next - t
             h_eta = h * (eta + 1)
             s = t + r * h
             fac = 1 / (2 * r)
             sigma_s = s.neg().exp()
 
-            coeff_1, coeff_2 = (-r * h_eta).expm1(), (-h_eta).expm1()
+            coeff_1, coeff_2 = torch.expm1(-r * h_eta), torch.expm1(-h_eta)
             if inject_noise:
-                noise_coeff_1 = (-2 * r * h * eta).expm1().neg().sqrt()
-                noise_coeff_2 = ((-2 * r * h * eta).expm1() - (-2 * h * eta).expm1()).sqrt()
-                noise_1, noise_2 = noise_sampler(sigmas[i], sigma_s), noise_sampler(sigma_s, sigmas[i + 1])
+                noise_coeff_1 = torch.expm1(-2 * r * h * eta).neg().sqrt()
+                noise_coeff_2 = (torch.expm1(-2 * r * h * eta) - torch.expm1(-2 * h * eta)).sqrt()
+                noise_1 = noise_sampler(x.size())
+                noise_2 = noise_sampler(x.size())
 
             # Step 1
             x_2 = (coeff_1 + 1) * x - coeff_1 * denoised
             if inject_noise:
-                x_2 = x_2 + sigma_s * (noise_coeff_1 * noise_1) * s_noise
+                x_2 += sigma_s * noise_coeff_1 * noise_1 * s_noise
             denoised_2 = model(x_2, sigma_s * s_in, **extra_args)
 
             # Step 2
             denoised_d = (1 - fac) * denoised + fac * denoised_2
             x = (coeff_2 + 1) * x - coeff_2 * denoised_d
             if inject_noise:
-                x = x + sigmas[i + 1] * (noise_coeff_2 * noise_1 + noise_coeff_1 * noise_2) * s_noise
+                x += sigma_next * (noise_coeff_2 * noise_1 + noise_coeff_1 * noise_2) * s_noise
+
     return x
 
 @torch.no_grad()
