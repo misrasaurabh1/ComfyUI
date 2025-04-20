@@ -360,13 +360,20 @@ def sample_dpm_2_ancestral_RF(model, x, sigmas, extra_args=None, callback=None, 
 def linear_multistep_coeff(order, t, i, j):
     if order - 1 > i:
         raise ValueError(f'Order {order} too high for step {i}')
+    
+    # Precompute factors to use inside the integrand
+    precomputed_factors = []
+    for k in range(order):
+        if j != k:
+            factor = 1 / (t[i - j] - t[i - k])
+            precomputed_factors.append((k, factor))
+    
     def fn(tau):
         prod = 1.
-        for k in range(order):
-            if j == k:
-                continue
-            prod *= (tau - t[i - k]) / (t[i - j] - t[i - k])
+        for k, factor in precomputed_factors:
+            prod *= (tau - t[i - k]) * factor
         return prod
+    
     return integrate.quad(fn, t[i], t[i + 1], epsrel=1e-4)[0]
 
 
@@ -375,6 +382,9 @@ def sample_lms(model, x, sigmas, extra_args=None, callback=None, disable=None, o
     extra_args = {} if extra_args is None else extra_args
     s_in = x.new_ones([x.shape[0]])
     sigmas_cpu = sigmas.detach().cpu().numpy()
+
+    precomputed_intervals = precompute_integration_intervals(sigmas_cpu, order)
+    
     ds = []
     for i in trange(len(sigmas) - 1, disable=disable):
         denoised = model(x, sigmas[i] * s_in, **extra_args)
@@ -385,7 +395,7 @@ def sample_lms(model, x, sigmas, extra_args=None, callback=None, disable=None, o
         if callback is not None:
             callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigmas[i], 'denoised': denoised})
         cur_order = min(i + 1, order)
-        coeffs = [linear_multistep_coeff(cur_order, sigmas_cpu, i, j) for j in range(cur_order)]
+        coeffs = precomputed_intervals[i][:cur_order]
         x = x + sum(coeff * d for coeff, d in zip(coeffs, reversed(ds)))
     return x
 
@@ -1520,3 +1530,27 @@ def sample_seeds_3(model, x, sigmas, extra_args=None, callback=None, disable=Non
             if inject_noise:
                 x = x + sigmas[i + 1] * (noise_coeff_3 * noise_1 + noise_coeff_2 * noise_2 + noise_coeff_1 * noise_3) * s_noise
     return x
+
+
+# Precompute the integration intervals to avoid repetitive calculations
+def precompute_integration_intervals(sigmas_cpu, order, epsrel=1e-4):
+    intervals = []
+    for i in range(len(sigmas_cpu) - 1):
+        cur_order = min(i + 1, order)
+        interval = []
+        for j in range(cur_order):
+            precomputed_factors = []
+            # Precompute factors instead of computing them in each `fn` call
+            for k in range(cur_order):
+                if j != k:
+                    factor = 1 / (sigmas_cpu[i - j] - sigmas_cpu[i - k])
+                    precomputed_factors.append((k, factor))
+            def fn(tau, i=i, precomputed_factors=precomputed_factors):
+                prod = 1.
+                for _, factor in precomputed_factors:
+                    prod *= (tau - sigmas_cpu[i - k]) * factor
+                return prod
+            result, _ = integrate.quad(fn, sigmas_cpu[i], sigmas_cpu[i + 1], epsrel=epsrel)
+            interval.append(result)
+        intervals.append(interval)
+    return intervals
