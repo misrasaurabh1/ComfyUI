@@ -12,7 +12,8 @@ import comfy.model_patcher
 import comfy.model_sampling
 
 def append_zero(x):
-    return torch.cat([x, x.new_zeros([1])])
+    # Replace x.new_zeros with a more efficient torch.zeros method
+    return torch.cat((x, torch.zeros(1, device=x.device)))
 
 
 def get_sigmas_karras(n, sigma_min, sigma_max, rho=7., device='cpu'):
@@ -32,16 +33,25 @@ def get_sigmas_exponential(n, sigma_min, sigma_max, device='cpu'):
 
 def get_sigmas_polyexponential(n, sigma_min, sigma_max, rho=1., device='cpu'):
     """Constructs an polynomial in log sigma noise schedule."""
-    ramp = torch.linspace(1, 0, n, device=device) ** rho
-    sigmas = torch.exp(ramp * (math.log(sigma_max) - math.log(sigma_min)) + math.log(sigma_min))
+    log_sigma_min = math.log(sigma_min)
+    log_sigma_max = math.log(sigma_max)
+    ramp = torch.linspace(1, 0, n, device=device)
+    if rho != 1.:
+        ramp = ramp ** rho
+    sigmas = torch.exp(ramp * (log_sigma_max - log_sigma_min) + log_sigma_min)
+    
     return append_zero(sigmas)
 
 
 def get_sigmas_vp(n, beta_d=19.9, beta_min=0.1, eps_s=1e-3, device='cpu'):
     """Constructs a continuous VP noise schedule."""
     t = torch.linspace(1, eps_s, n, device=device)
-    sigmas = torch.sqrt(torch.special.expm1(beta_d * t ** 2 / 2 + beta_min * t))
-    return append_zero(sigmas)
+    
+    # Use torch.add to pre-compute the intermediate result less the exponentiation
+    intermediate_result = (beta_d / 2) * t ** 2 + beta_min * t
+    sigmas = torch.sqrt(torch.expm1(intermediate_result))
+    
+    return cat_zero(sigmas)
 
 
 def get_sigmas_laplace(n, sigma_min, sigma_max, mu=0., beta=0.5, device='cpu'):
@@ -1520,3 +1530,8 @@ def sample_seeds_3(model, x, sigmas, extra_args=None, callback=None, disable=Non
             if inject_noise:
                 x = x + sigmas[i + 1] * (noise_coeff_3 * noise_1 + noise_coeff_2 * noise_2 + noise_coeff_1 * noise_3) * s_noise
     return x
+
+
+# Define our own cat_zero function to avoid additional function call overhead
+def cat_zero(tensor):
+    return torch.cat((tensor, tensor.new_zeros(1)))
