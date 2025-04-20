@@ -57,7 +57,7 @@ def get_sigmas_laplace(n, sigma_min, sigma_max, mu=0., beta=0.5, device='cpu'):
 
 def to_d(x, sigma, denoised):
     """Converts a denoiser output to a Karras ODE derivative."""
-    return (x - denoised) / utils.append_dims(sigma, x.ndim)
+    return (x - denoised) / sigma_appended
 
 
 def get_ancestral_step(sigma_from, sigma_to, eta=1.):
@@ -1279,6 +1279,7 @@ def res_multistep(model, x, sigmas, extra_args=None, callback=None, disable=None
 
     old_denoised = None
     uncond_denoised = None
+    
     def post_cfg_function(args):
         nonlocal uncond_denoised
         uncond_denoised = args["uncond_denoised"]
@@ -1288,44 +1289,45 @@ def res_multistep(model, x, sigmas, extra_args=None, callback=None, disable=None
         model_options = extra_args.get("model_options", {}).copy()
         extra_args["model_options"] = comfy.model_patcher.set_model_options_post_cfg_function(model_options, post_cfg_function, disable_cfg1_optimization=True)
 
-    for i in trange(len(sigmas) - 1, disable=disable):
-        denoised = model(x, sigmas[i] * s_in, **extra_args)
-        sigma_down, sigma_up = get_ancestral_step(sigmas[i], sigmas[i + 1], eta=eta)
-        if callback is not None:
-            callback({"x": x, "i": i, "sigma": sigmas[i], "sigma_hat": sigmas[i], "denoised": denoised})
+    sigmas_len = len(sigmas) - 1
+
+    for i in trange(sigmas_len, disable=disable):
+        sigma_i = sigmas[i]
+        sigma_i_next = sigmas[i + 1]
+
+        if callback:
+            callback({"x": x, "i": i, "sigma": sigma_i, "sigma_hat": sigma_i, "denoised": denoised})
+
+        denoised = model(x, sigma_i * s_in, **extra_args)
+        
+        if sigma_i_next <= 0:
+            continue
+
+        sigma_down, sigma_up = get_ancestral_step(sigma_i, sigma_i_next, eta=eta)
+
         if sigma_down == 0 or old_denoised is None:
-            # Euler method
-            if cfg_pp:
-                d = to_d(x, sigmas[i], uncond_denoised)
-                x = denoised + d * sigma_down
-            else:
-                d = to_d(x, sigmas[i], denoised)
-                dt = sigma_down - sigmas[i]
-                x = x + d * dt
+            d = to_d(x, sigma_i, uncond_denoised if cfg_pp else denoised)
+            dt = sigma_down - sigma_i
+            x = x.add_(d, alpha=dt)
         else:
-            # Second order multistep method in https://arxiv.org/pdf/2308.02157
-            t, t_next, t_prev = t_fn(sigmas[i]), t_fn(sigma_down), t_fn(sigmas[i - 1])
+            t, t_next = t_fn(sigma_i), t_fn(sigma_down)
+            t_prev = t_fn(sigmas[i - 1])
             h = t_next - t
             c2 = (t_prev - t) / h
 
-            phi1_val, phi2_val = phi1_fn(-h), phi2_fn(-h)
+            phi1_val = phi1_fn(-h)
+            phi2_val = phi2_fn(-h)
             b1 = torch.nan_to_num(phi1_val - phi2_val / c2, nan=0.0)
             b2 = torch.nan_to_num(phi2_val / c2, nan=0.0)
 
-            if cfg_pp:
-                x = x + (denoised - uncond_denoised)
-                x = sigma_fn(h) * x + h * (b1 * uncond_denoised + b2 * old_denoised)
-            else:
-                x = sigma_fn(h) * x + h * (b1 * denoised + b2 * old_denoised)
+            x.add_(denoised - uncond_denoised if cfg_pp else 0)
+            x.mul_(sigma_fn(h)).add_(h * (b1 * uncond_denoised + b2 * old_denoised) if cfg_pp else h * (b1 * denoised + b2 * old_denoised))
+          
+        noise = noise_sampler(sigma_i, sigma_i_next).mul_(s_noise * sigma_up)
+        x.add_(noise)
 
-        # Noise addition
-        if sigmas[i + 1] > 0:
-            x = x + noise_sampler(sigmas[i], sigmas[i + 1]) * s_noise * sigma_up
+        old_denoised = uncond_denoised if cfg_pp else denoised
 
-        if cfg_pp:
-            old_denoised = uncond_denoised
-        else:
-            old_denoised = denoised
     return x
 
 @torch.no_grad()
@@ -1351,20 +1353,28 @@ def sample_gradient_estimation(model, x, sigmas, extra_args=None, callback=None,
     s_in = x.new_ones([x.shape[0]])
     old_d = None
 
+    sigma_shape_expanded = utils.append_dims(s_in, x.ndim)
+
     for i in trange(len(sigmas) - 1, disable=disable):
-        denoised = model(x, sigmas[i] * s_in, **extra_args)
-        d = to_d(x, sigmas[i], denoised)
+        sigma_scaled = sigmas[i] * sigma_shape_expanded
+        denoised = model(x, sigma_scaled, **extra_args)
+        sigma_appended = utils.append_dims(sigmas[i], x.ndim)
+        d = to_d(x, sigmas[i], denoised, sigma_appended)
+
         if callback is not None:
             callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigmas[i], 'denoised': denoised})
+
         dt = sigmas[i + 1] - sigmas[i]
         if i == 0:
             # Euler method
-            x = x + d * dt
+            x += d * dt
         else:
             # Gradient estimation
             d_bar = ge_gamma * d + (1 - ge_gamma) * old_d
-            x = x + d_bar * dt
+            x += d_bar * dt
+        
         old_d = d
+
     return x
 
 @torch.no_grad()
