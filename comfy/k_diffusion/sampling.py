@@ -57,7 +57,8 @@ def get_sigmas_laplace(n, sigma_min, sigma_max, mu=0., beta=0.5, device='cpu'):
 
 def to_d(x, sigma, denoised):
     """Converts a denoiser output to a Karras ODE derivative."""
-    return (x - denoised) / utils.append_dims(sigma, x.ndim)
+    sigma_expanded = utils.append_dims(sigma, x.ndim)
+    return (x - denoised) / sigma_expanded
 
 
 def get_ancestral_step(sigma_from, sigma_to, eta=1.):
@@ -65,18 +66,17 @@ def get_ancestral_step(sigma_from, sigma_to, eta=1.):
     of noise to add (sigma_up) when doing an ancestral sampling step."""
     if not eta:
         return sigma_to, 0.
-    sigma_up = min(sigma_to, eta * (sigma_to ** 2 * (sigma_from ** 2 - sigma_to ** 2) / sigma_from ** 2) ** 0.5)
+    diff = sigma_from ** 2 - sigma_to ** 2
+    sigma_up = eta * sigma_to * (diff / sigma_from ** 2) ** 0.5
     sigma_down = (sigma_to ** 2 - sigma_up ** 2) ** 0.5
     return sigma_down, sigma_up
 
 
 def default_noise_sampler(x, seed=None):
-    if seed is not None:
-        generator = torch.Generator(device=x.device)
+    generator = torch.Generator(device=x.device) if seed is not None else None
+    if generator:
         generator.manual_seed(seed)
-    else:
-        generator = None
-
+    
     return lambda sigma, sigma_next: torch.randn(x.size(), dtype=x.dtype, layout=x.layout, device=x.device, generator=generator)
 
 
@@ -428,27 +428,39 @@ class DPMSolver(nn.Module):
         self.extra_args = {} if extra_args is None else extra_args
         self.eps_callback = eps_callback
         self.info_callback = info_callback
+        self._sigma_cache = {}
 
     def t(self, sigma):
         return -sigma.log()
 
     def sigma(self, t):
-        return t.neg().exp()
+        if t in self._sigma_cache:
+            return self._sigma_cache[t]
+        sigma_val = t.neg().exp()
+        self._sigma_cache[t] = sigma_val
+        return sigma_val
 
     def eps(self, eps_cache, key, x, t, *args, **kwargs):
         if key in eps_cache:
             return eps_cache[key], eps_cache
-        sigma = self.sigma(t) * x.new_ones([x.shape[0]])
-        eps = (x - self.model(x, sigma, *args, **self.extra_args, **kwargs)) / self.sigma(t)
+        
+        sigma_value = self.sigma(t)
+        sigma = sigma_value * x.new_ones([x.shape[0]])
+        model_output = self.model(x, sigma, *args, **self.extra_args, **kwargs)
+        eps = (x - model_output) / sigma_value
+        
         if self.eps_callback is not None:
             self.eps_callback()
+        
         return eps, {key: eps, **eps_cache}
 
     def dpm_solver_1_step(self, x, t, t_next, eps_cache=None):
         eps_cache = {} if eps_cache is None else eps_cache
         h = t_next - t
         eps, eps_cache = self.eps(eps_cache, 'eps', x, t)
-        x_1 = x - self.sigma(t_next) * h.expm1() * eps
+        sigma_t_next = self.sigma(t_next)
+        expm1_h = h.expm1()
+        x_1 = x - sigma_t_next * expm1_h * eps
         return x_1, eps_cache
 
     def dpm_solver_2_step(self, x, t, t_next, r1=1 / 2, eps_cache=None):
@@ -487,18 +499,27 @@ class DPMSolver(nn.Module):
         else:
             orders = [3] * (m - 1) + [nfe % 3]
 
+        eps_cache = {}
+        sigma_cache = {}
+
+        def cached_sigma(t_):
+            if t_ not in sigma_cache:
+                sigma_cache[t_] = self.sigma(t_)
+            return sigma_cache[t_]
+
         for i in range(len(orders)):
-            eps_cache = {}
             t, t_next = ts[i], ts[i + 1]
             if eta:
-                sd, su = get_ancestral_step(self.sigma(t), self.sigma(t_next), eta)
+                sigma_t = cached_sigma(t)
+                sigma_t_next = cached_sigma(t_next)
+                sd, su = get_ancestral_step(sigma_t, sigma_t_next, eta)
                 t_next_ = torch.minimum(t_end, self.t(sd))
-                su = (self.sigma(t_next) ** 2 - self.sigma(t_next_) ** 2) ** 0.5
+                su = (sigma_t_next ** 2 - cached_sigma(t_next_) ** 2) ** 0.5
             else:
                 t_next_, su = t_next, 0.
 
             eps, eps_cache = self.eps(eps_cache, 'eps', x, t)
-            denoised = x - self.sigma(t) * eps
+            denoised = x - cached_sigma(t) * eps
             if self.info_callback is not None:
                 self.info_callback({'x': x, 'i': i, 't': ts[i], 't_up': t, 'denoised': denoised})
 
@@ -509,7 +530,7 @@ class DPMSolver(nn.Module):
             else:
                 x, eps_cache = self.dpm_solver_3_step(x, t, t_next_, eps_cache=eps_cache)
 
-            x = x + su * s_noise * noise_sampler(self.sigma(t), self.sigma(t_next))
+            x = x + su * s_noise * noise_sampler(cached_sigma(t), cached_sigma(t_next))
 
         return x
 
@@ -598,88 +619,91 @@ def sample_dpm_adaptive(model, x, sigma_min, sigma_max, extra_args=None, callbac
 def sample_dpmpp_2s_ancestral(model, x, sigmas, extra_args=None, callback=None, disable=None, eta=1., s_noise=1., noise_sampler=None):
     if isinstance(model.inner_model.inner_model.model_sampling, comfy.model_sampling.CONST):
         return sample_dpmpp_2s_ancestral_RF(model, x, sigmas, extra_args, callback, disable, eta, s_noise, noise_sampler)
-
+    
     """Ancestral sampling with DPM-Solver++(2S) second-order steps."""
-    extra_args = {} if extra_args is None else extra_args
-    seed = extra_args.get("seed", None)
-    noise_sampler = default_noise_sampler(x, seed=seed) if noise_sampler is None else noise_sampler
+    extra_args = extra_args or {}
+    noise_sampler = noise_sampler or default_noise_sampler(x, seed=extra_args.get("seed"))
     s_in = x.new_ones([x.shape[0]])
+    
     sigma_fn = lambda t: t.neg().exp()
     t_fn = lambda sigma: sigma.log().neg()
 
     for i in trange(len(sigmas) - 1, disable=disable):
         denoised = model(x, sigmas[i] * s_in, **extra_args)
         sigma_down, sigma_up = get_ancestral_step(sigmas[i], sigmas[i + 1], eta=eta)
-        if callback is not None:
+        
+        if callback:
             callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigmas[i], 'denoised': denoised})
+        
         if sigma_down == 0:
             # Euler method
             d = to_d(x, sigmas[i], denoised)
-            dt = sigma_down - sigmas[i]
-            x = x + d * dt
+            x = x + d * (sigma_down - sigmas[i])
         else:
             # DPM-Solver++(2S)
-            t, t_next = t_fn(sigmas[i]), t_fn(sigma_down)
-            r = 1 / 2
+            t = t_fn(sigmas[i])
+            t_next = t_fn(sigma_down)
+            r = 0.5
             h = t_next - t
             s = t + r * h
             x_2 = (sigma_fn(s) / sigma_fn(t)) * x - (-h * r).expm1() * denoised
             denoised_2 = model(x_2, sigma_fn(s) * s_in, **extra_args)
             x = (sigma_fn(t_next) / sigma_fn(t)) * x - (-h).expm1() * denoised_2
+        
         # Noise addition
         if sigmas[i + 1] > 0:
-            x = x + noise_sampler(sigmas[i], sigmas[i + 1]) * s_noise * sigma_up
+            x += noise_sampler(sigmas[i], sigmas[i + 1]) * s_noise * sigma_up
+
     return x
 
 
 @torch.no_grad()
 def sample_dpmpp_2s_ancestral_RF(model, x, sigmas, extra_args=None, callback=None, disable=None, eta=1., s_noise=1., noise_sampler=None):
     """Ancestral sampling with DPM-Solver++(2S) second-order steps."""
-    extra_args = {} if extra_args is None else extra_args
-    seed = extra_args.get("seed", None)
-    noise_sampler = default_noise_sampler(x, seed=seed) if noise_sampler is None else noise_sampler
+    extra_args = extra_args or {}
+    noise_sampler = noise_sampler or default_noise_sampler(x, seed=extra_args.get("seed"))
     s_in = x.new_ones([x.shape[0]])
+    
     sigma_fn = lambda lbda: (lbda.exp() + 1) ** -1
-    lambda_fn = lambda sigma: ((1-sigma)/sigma).log()
-
-    # logged_x = x.unsqueeze(0)
+    lambda_fn = lambda sigma: ((1 - sigma) / sigma).log()
 
     for i in trange(len(sigmas) - 1, disable=disable):
         denoised = model(x, sigmas[i] * s_in, **extra_args)
-        downstep_ratio = 1 + (sigmas[i+1]/sigmas[i] - 1) * eta
-        sigma_down = sigmas[i+1] * downstep_ratio
-        alpha_ip1 = 1 - sigmas[i+1]
+        downstep_ratio = 1 + (sigmas[i + 1] / sigmas[i] - 1) * eta
+        sigma_down = sigmas[i + 1] * downstep_ratio
+        alpha_ip1 = 1 - sigmas[i + 1]
         alpha_down = 1 - sigma_down
-        renoise_coeff = (sigmas[i+1]**2 - sigma_down**2*alpha_ip1**2/alpha_down**2)**0.5
-        # sigma_down, sigma_up = get_ancestral_step(sigmas[i], sigmas[i + 1], eta=eta)
-        if callback is not None:
+        renoise_coeff = (sigmas[i + 1] ** 2 - sigma_down ** 2 * alpha_ip1 ** 2 / alpha_down ** 2) ** 0.5
+        
+        if callback:
             callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigmas[i], 'denoised': denoised})
+        
         if sigmas[i + 1] == 0:
             # Euler method
             d = to_d(x, sigmas[i], denoised)
-            dt = sigma_down - sigmas[i]
-            x = x + d * dt
+            x = x + d * (sigma_down - sigmas[i])
         else:
             # DPM-Solver++(2S)
             if sigmas[i] == 1.0:
                 sigma_s = 0.9999
             else:
-                t_i, t_down = lambda_fn(sigmas[i]), lambda_fn(sigma_down)
-                r = 1 / 2
+                t_i = lambda_fn(sigmas[i])
+                t_down = lambda_fn(sigma_down)
+                r = 0.5
                 h = t_down - t_i
                 s = t_i + r * h
                 sigma_s = sigma_fn(s)
-            # sigma_s = sigmas[i+1]
+            
             sigma_s_i_ratio = sigma_s / sigmas[i]
             u = sigma_s_i_ratio * x + (1 - sigma_s_i_ratio) * denoised
             D_i = model(u, sigma_s * s_in, **extra_args)
             sigma_down_i_ratio = sigma_down / sigmas[i]
             x = sigma_down_i_ratio * x + (1 - sigma_down_i_ratio) * D_i
-            # print("sigma_i", sigmas[i], "sigma_ip1", sigmas[i+1],"sigma_down", sigma_down, "sigma_down_i_ratio", sigma_down_i_ratio, "sigma_s_i_ratio", sigma_s_i_ratio, "renoise_coeff", renoise_coeff)
+        
         # Noise addition
         if sigmas[i + 1] > 0 and eta > 0:
-            x = (alpha_ip1/alpha_down) * x + noise_sampler(sigmas[i], sigmas[i + 1]) * s_noise * renoise_coeff
-        # logged_x = torch.cat((logged_x, x.unsqueeze(0)), dim=0)
+            x = (alpha_ip1 / alpha_down) * x + noise_sampler(sigmas[i], sigmas[i + 1]) * s_noise * renoise_coeff
+
     return x
 
 @torch.no_grad()
@@ -697,34 +721,41 @@ def sample_dpmpp_sde(model, x, sigmas, extra_args=None, callback=None, disable=N
     t_fn = lambda sigma: sigma.log().neg()
 
     for i in trange(len(sigmas) - 1, disable=disable):
-        denoised = model(x, sigmas[i] * s_in, **extra_args)
-        if callback is not None:
-            callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigmas[i], 'denoised': denoised})
-        if sigmas[i + 1] == 0:
+        sigma_current = sigmas[i]
+        sigma_next = sigmas[i + 1]
+        
+        # Integrate `s_in` into model call for potential optimization
+        denoised = model(x, sigma_current * s_in, **extra_args)
+        if callback is not None:    
+            callback({'x': x, 'i': i, 'sigma': sigma_current, 'sigma_hat': sigma_current, 'denoised': denoised})
+        if sigma_next == 0:
             # Euler method
-            d = to_d(x, sigmas[i], denoised)
-            dt = sigmas[i + 1] - sigmas[i]
+            d = to_d(x, sigma_current, denoised)
+            dt = sigma_next - sigma_current
             x = x + d * dt
         else:
             # DPM-Solver++
-            t, t_next = t_fn(sigmas[i]), t_fn(sigmas[i + 1])
+            t, t_next = t_fn(sigma_current), t_fn(sigma_next)
             h = t_next - t
             s = t + h * r
             fac = 1 / (2 * r)
 
             # Step 1
-            sd, su = get_ancestral_step(sigma_fn(t), sigma_fn(s), eta)
+            sigma_current_val = sigma_fn(t)
+            sigma_s_val = sigma_fn(s)
+            sd, su = get_ancestral_step(sigma_current_val, sigma_s_val, eta)
             s_ = t_fn(sd)
-            x_2 = (sigma_fn(s_) / sigma_fn(t)) * x - (t - s_).expm1() * denoised
-            x_2 = x_2 + noise_sampler(sigma_fn(t), sigma_fn(s)) * s_noise * su
-            denoised_2 = model(x_2, sigma_fn(s) * s_in, **extra_args)
+            x_2 = (sigma_fn(s_) / sigma_current_val) * x - (t - s_).expm1() * denoised
+            x_2 += noise_sampler(sigma_current_val, sigma_s_val) * s_noise * su
+            denoised_2 = model(x_2, sigma_s_val * s_in, **extra_args)
 
             # Step 2
-            sd, su = get_ancestral_step(sigma_fn(t), sigma_fn(t_next), eta)
+            sigma_t_next_val = sigma_fn(t_next)
+            sd, su = get_ancestral_step(sigma_current_val, sigma_t_next_val, eta)
             t_next_ = t_fn(sd)
             denoised_d = (1 - fac) * denoised + fac * denoised_2
-            x = (sigma_fn(t_next_) / sigma_fn(t)) * x - (t - t_next_).expm1() * denoised_d
-            x = x + noise_sampler(sigma_fn(t), sigma_fn(t_next)) * s_noise * su
+            x = (sigma_fn(t_next_) / sigma_current_val) * x - (t - t_next_).expm1() * denoised_d
+            x += noise_sampler(sigma_current_val, sigma_t_next_val) * s_noise * su
     return x
 
 
