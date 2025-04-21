@@ -65,8 +65,17 @@ def get_ancestral_step(sigma_from, sigma_to, eta=1.):
     of noise to add (sigma_up) when doing an ancestral sampling step."""
     if not eta:
         return sigma_to, 0.
-    sigma_up = min(sigma_to, eta * (sigma_to ** 2 * (sigma_from ** 2 - sigma_to ** 2) / sigma_from ** 2) ** 0.5)
-    sigma_down = (sigma_to ** 2 - sigma_up ** 2) ** 0.5
+    
+    sigma_to_square = sigma_to ** 2
+    sigma_from_square = sigma_from ** 2
+
+    # Precompute common term used in sigma_up
+    common_term = eta * (sigma_to_square * (sigma_from_square - sigma_to_square) / sigma_from_square) ** 0.5
+    sigma_up = min(sigma_to, common_term)
+
+    # Directly calculate sigma_down using the updated sigma_up
+    sigma_down = (sigma_to_square - sigma_up ** 2) ** 0.5
+    
     return sigma_down, sigma_up
 
 
