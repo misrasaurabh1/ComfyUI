@@ -57,7 +57,8 @@ def get_sigmas_laplace(n, sigma_min, sigma_max, mu=0., beta=0.5, device='cpu'):
 
 def to_d(x, sigma, denoised):
     """Converts a denoiser output to a Karras ODE derivative."""
-    return (x - denoised) / utils.append_dims(sigma, x.ndim)
+    sigma_expanded = utils.append_dims(sigma, x.ndim)
+    return (x - denoised) / sigma_expanded
 
 
 def get_ancestral_step(sigma_from, sigma_to, eta=1.):
@@ -258,36 +259,51 @@ def sample_heun(model, x, sigmas, extra_args=None, callback=None, disable=None, 
 @torch.no_grad()
 def sample_dpm_2(model, x, sigmas, extra_args=None, callback=None, disable=None, s_churn=0., s_tmin=0., s_tmax=float('inf'), s_noise=1.):
     """A sampler inspired by DPM-Solver-2 and Algorithm 2 from Karras et al. (2022)."""
-    extra_args = {} if extra_args is None else extra_args
+    
+    # Initialize variables
+    extra_args = extra_args or {}
     s_in = x.new_ones([x.shape[0]])
-    for i in trange(len(sigmas) - 1, disable=disable):
-        if s_churn > 0:
-            gamma = min(s_churn / (len(sigmas) - 1), 2 ** 0.5 - 1) if s_tmin <= sigmas[i] <= s_tmax else 0.
-            sigma_hat = sigmas[i] * (gamma + 1)
+    needs_noise = s_churn > 0
+    total_iters = len(sigmas) - 1
+    
+    for i in trange(total_iters, disable=disable):
+        sigma_i = sigmas[i]
+        
+        if needs_noise and s_tmin <= sigma_i <= s_tmax:
+            gamma = min(s_churn / total_iters, 2 ** 0.5 - 1)
+            sigma_hat = sigma_i * (gamma + 1)
+            eps = torch.randn_like(x) * s_noise
+            x.addcmul_(eps, (sigma_hat ** 2 - sigma_i ** 2).sqrt(), value=1)
         else:
             gamma = 0
-            sigma_hat = sigmas[i]
-
-        if gamma > 0:
-            eps = torch.randn_like(x) * s_noise
-            x = x + eps * (sigma_hat ** 2 - sigmas[i] ** 2) ** 0.5
+            sigma_hat = sigma_i
+        
         denoised = model(x, sigma_hat * s_in, **extra_args)
         d = to_d(x, sigma_hat, denoised)
-        if callback is not None:
-            callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigma_hat, 'denoised': denoised})
-        if sigmas[i + 1] == 0:
+        
+        if callback:
+            callback({'x': x, 'i': i, 'sigma': sigma_i, 'sigma_hat': sigma_hat, 'denoised': denoised})
+        
+        next_sigma = sigmas[i + 1]
+        if next_sigma == 0:
             # Euler method
-            dt = sigmas[i + 1] - sigma_hat
-            x = x + d * dt
+            dt = next_sigma - sigma_hat
+            x.addcmul_(d, dt, value=1)
         else:
             # DPM-Solver-2
-            sigma_mid = sigma_hat.log().lerp(sigmas[i + 1].log(), 0.5).exp()
+            sigma_hat_log = sigma_hat.log()
+            next_sigma_log = next_sigma.log()
+            sigma_mid = sigma_hat_log.lerp(next_sigma_log, 0.5).exp()
+            
             dt_1 = sigma_mid - sigma_hat
-            dt_2 = sigmas[i + 1] - sigma_hat
+            dt_2 = next_sigma - sigma_hat
+            
             x_2 = x + d * dt_1
             denoised_2 = model(x_2, sigma_mid * s_in, **extra_args)
             d_2 = to_d(x_2, sigma_mid, denoised_2)
-            x = x + d_2 * dt_2
+            
+            x.addcmul_(d_2, dt_2, value=1)
+    
     return x
 
 
