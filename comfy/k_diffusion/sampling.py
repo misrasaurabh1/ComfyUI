@@ -1032,61 +1032,39 @@ def sample_ipndm(model, x, sigmas, extra_args=None, callback=None, disable=None,
 def sample_ipndm_v(model, x, sigmas, extra_args=None, callback=None, disable=None, max_order=4):
     extra_args = {} if extra_args is None else extra_args
     s_in = x.new_ones([x.shape[0]])
-
     x_next = x
     t_steps = sigmas
+    buffer_model = [None] * (max_order - 1)
+    coeffs = compute_coefficients(len(t_steps) - 1, t_steps)
 
-    buffer_model = []
     for i in trange(len(sigmas) - 1, disable=disable):
         t_cur = sigmas[i]
         t_next = sigmas[i + 1]
+        denoised = model(x_next, t_cur * s_in, **extra_args)
 
-        x_cur = x_next
-
-        denoised = model(x_cur, t_cur * s_in, **extra_args)
         if callback is not None:
             callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigmas[i], 'denoised': denoised})
 
-        d_cur = (x_cur - denoised) / t_cur
-
+        d_cur = (x_next - denoised) / t_cur
         order = min(max_order, i+1)
-        if order == 1:      # First Euler step.
-            x_next = x_cur + (t_next - t_cur) * d_cur
-        elif order == 2:    # Use one history point.
-            h_n = (t_next - t_cur)
-            h_n_1 = (t_cur - t_steps[i-1])
-            coeff1 = (2 + (h_n / h_n_1)) / 2
-            coeff2 = -(h_n / h_n_1) / 2
-            x_next = x_cur + (t_next - t_cur) * (coeff1 * d_cur + coeff2 * buffer_model[-1])
-        elif order == 3:    # Use two history points.
-            h_n = (t_next - t_cur)
-            h_n_1 = (t_cur - t_steps[i-1])
-            h_n_2 = (t_steps[i-1] - t_steps[i-2])
-            temp = (1 - h_n / (3 * (h_n + h_n_1)) * (h_n * (h_n + h_n_1)) / (h_n_1 * (h_n_1 + h_n_2))) / 2
-            coeff1 = (2 + (h_n / h_n_1)) / 2 + temp
-            coeff2 = -(h_n / h_n_1) / 2 - (1 + h_n_1 / h_n_2) * temp
-            coeff3 = temp * h_n_1 / h_n_2
-            x_next = x_cur + (t_next - t_cur) * (coeff1 * d_cur + coeff2 * buffer_model[-1] + coeff3 * buffer_model[-2])
-        elif order == 4:    # Use three history points.
-            h_n = (t_next - t_cur)
-            h_n_1 = (t_cur - t_steps[i-1])
-            h_n_2 = (t_steps[i-1] - t_steps[i-2])
-            h_n_3 = (t_steps[i-2] - t_steps[i-3])
-            temp1 = (1 - h_n / (3 * (h_n + h_n_1)) * (h_n * (h_n + h_n_1)) / (h_n_1 * (h_n_1 + h_n_2))) / 2
-            temp2 = ((1 - h_n / (3 * (h_n + h_n_1))) / 2 + (1 - h_n / (2 * (h_n + h_n_1))) * h_n / (6 * (h_n + h_n_1 + h_n_2))) \
-                   * (h_n * (h_n + h_n_1) * (h_n + h_n_1 + h_n_2)) / (h_n_1 * (h_n_1 + h_n_2) * (h_n_1 + h_n_2 + h_n_3))
-            coeff1 = (2 + (h_n / h_n_1)) / 2 + temp1 + temp2
-            coeff2 = -(h_n / h_n_1) / 2 - (1 + h_n_1 / h_n_2) * temp1 - (1 + (h_n_1 / h_n_2) + (h_n_1 * (h_n_1 + h_n_2) / (h_n_2 * (h_n_2 + h_n_3)))) * temp2
-            coeff3 = temp1 * h_n_1 / h_n_2 + ((h_n_1 / h_n_2) + (h_n_1 * (h_n_1 + h_n_2) / (h_n_2 * (h_n_2 + h_n_3))) * (1 + h_n_2 / h_n_3)) * temp2
-            coeff4 = -temp2 * (h_n_1 * (h_n_1 + h_n_2) / (h_n_2 * (h_n_2 + h_n_3))) * h_n_1 / h_n_2
-            x_next = x_cur + (t_next - t_cur) * (coeff1 * d_cur + coeff2 * buffer_model[-1] + coeff3 * buffer_model[-2] + coeff4 * buffer_model[-3])
+        coeff = coeffs[order]
 
-        if len(buffer_model) == max_order - 1:
-            for k in range(max_order - 2):
-                buffer_model[k] = buffer_model[k+1]
-            buffer_model[-1] = d_cur.detach()
+        h = t_next - t_cur
+        if order == 1:
+            x_next = x_next + h * d_cur
+        elif order == 2:
+            x_next = x_next + h * (coeff[2][0] * d_cur + coeff[2][1] * buffer_model[-1])
+        elif order == 3:
+            x_next = x_next + h * (coeff[3][0] * d_cur + coeff[3][1] * buffer_model[-1] + coeff[3][2] * buffer_model[-2])
+        elif order == 4:
+            x_next = x_next + h * (
+                coeff[4][0] * d_cur + coeff[4][1] * buffer_model[-1] + coeff[4][2] * buffer_model[-2] + coeff[4][3] * buffer_model[-3]
+            )
+
+        if i + 1 >= max_order:
+            buffer_model = buffer_model[1:] + [d_cur.detach()]
         else:
-            buffer_model.append(d_cur.detach())
+            buffer_model[i] = d_cur.detach()
 
     return x_next
 
@@ -1520,3 +1498,42 @@ def sample_seeds_3(model, x, sigmas, extra_args=None, callback=None, disable=Non
             if inject_noise:
                 x = x + sigmas[i + 1] * (noise_coeff_3 * noise_1 + noise_coeff_2 * noise_2 + noise_coeff_1 * noise_3) * s_noise
     return x
+
+
+def compute_coefficients(max_order, t_steps):
+    coeffs = {}
+    # Precompute coefficients for all orders at once
+    for i in range(max_order):
+        local_coeffs = {}
+        h_n = (t_steps[i + 1] - t_steps[i])
+        
+        if i == 0:
+            # First Euler step
+            local_coeffs[1] = [1]
+        elif i >= 1:
+            h_n_1 = (t_steps[i] - t_steps[i-1])
+            local_coeffs[2] = [(2 + (h_n / h_n_1)) / 2, -(h_n / h_n_1) / 2]
+        
+        if i >= 2:
+            h_n_2 = (t_steps[i-1] - t_steps[i-2])
+            temp = (1 - h_n / (3 * (h_n + h_n_1)) * (h_n * (h_n + h_n_1)) / (h_n_1 * (h_n_1 + h_n_2))) / 2
+            local_coeffs[3] = [
+                (2 + (h_n / h_n_1)) / 2 + temp,
+                -(h_n / h_n_1) / 2 - (1 + h_n_1 / h_n_2) * temp,
+                temp * h_n_1 / h_n_2
+            ]
+        
+        if i >= 3:
+            h_n_3 = (t_steps[i-2] - t_steps[i-3])
+            temp1 = (1 - h_n / (3 * (h_n + h_n_1)) * (h_n * (h_n + h_n_1)) / (h_n_1 * (h_n_1 + h_n_2))) / 2
+            temp2 = ((1 - h_n / (3 * (h_n + h_n_1))) / 2 + (1 - h_n / (2 * (h_n + h_n_1))) * h_n / (6 * (h_n + h_n_1 + h_n_2))) \
+                    * (h_n * (h_n + h_n_1) * (h_n + h_n_1 + h_n_2)) / (h_n_1 * (h_n_1 + h_n_2) * (h_n_1 + h_n_2 + h_n_3))
+            local_coeffs[4] = [
+                (2 + (h_n / h_n_1)) / 2 + temp1 + temp2,
+                -(h_n / h_n_1) / 2 - (1 + h_n_1 / h_n_2) * temp1 - (1 + (h_n_1 / h_n_2) + (h_n_1 * (h_n_1 + h_n_2) / (h_n_2 * (h_n_2 + h_n_3)))) * temp2,
+                temp1 * h_n_1 / h_n_2 + ((h_n_1 / h_n_2) + (h_n_1 * (h_n_1 + h_n_2) / (h_n_2 * (h_n_2 + h_n_3))) * (1 + h_n_2 / h_n_3)) * temp2,
+                -temp2 * (h_n_1 * (h_n_1 + h_n_2) / (h_n_2 * (h_n_2 + h_n_3))) * h_n_1 / h_n_2
+            ]
+
+        coeffs[i + 1] = local_coeffs
+    return coeffs
