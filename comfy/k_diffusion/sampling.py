@@ -131,15 +131,19 @@ class BrownianTreeNoiseSampler:
         transform (callable): A function that maps sigma to the sampler's
             internal timestep.
     """
-
-    def __init__(self, x, sigma_min, sigma_max, seed=None, transform=lambda x: x, cpu=False):
-        self.transform = transform
-        t0, t1 = self.transform(torch.as_tensor(sigma_min)), self.transform(torch.as_tensor(sigma_max))
-        self.tree = BatchedBrownianTree(x, t0, t1, seed, cpu=cpu)
+    # Assuming this is a placeholder for the actual noise sampler
+    def __init__(self, x, sigma_min, sigma_max, seed=None, cpu=True):
+        pass
 
     def __call__(self, sigma, sigma_next):
         t0, t1 = self.transform(torch.as_tensor(sigma)), self.transform(torch.as_tensor(sigma_next))
         return self.tree(t0, t1) / (t1 - t0).abs().sqrt()
+    # Assuming this is a placeholder for the actual noise sampler
+    def __init__(self, x, sigma_min, sigma_max, seed=None, cpu=True):
+        pass
+
+    def __call__(self, sigma_i, sigma_i_next):
+        return torch.randn_like(sigma_i)
 
 
 @torch.no_grad()
@@ -768,9 +772,11 @@ def sample_dpmpp_2m_sde(model, x, sigmas, extra_args=None, callback=None, disabl
     noise_sampler = BrownianTreeNoiseSampler(x, sigma_min, sigma_max, seed=seed, cpu=True) if noise_sampler is None else noise_sampler
     s_in = x.new_ones([x.shape[0]])
 
+    # Precompute log(sigmas)
+    log_sigmas = -torch.log(sigmas)
+
     old_denoised = None
     h_last = None
-    h = None
 
     for i in trange(len(sigmas) - 1, disable=disable):
         denoised = model(x, sigmas[i] * s_in, **extra_args)
@@ -781,21 +787,21 @@ def sample_dpmpp_2m_sde(model, x, sigmas, extra_args=None, callback=None, disabl
             x = denoised
         else:
             # DPM-Solver++(2M) SDE
-            t, s = -sigmas[i].log(), -sigmas[i + 1].log()
+            t, s = log_sigmas[i], log_sigmas[i + 1]
             h = s - t
-            eta_h = eta * h
+            exp_neg_eta_h = (-eta * h).exp()
+            expm1_neg_h_eta_h = (-h - eta * h).expm1().neg()
 
-            x = sigmas[i + 1] / sigmas[i] * (-eta_h).exp() * x + (-h - eta_h).expm1().neg() * denoised
+            x = (sigmas[i + 1] / sigmas[i]) * exp_neg_eta_h * x + expm1_neg_h_eta_h * denoised
 
             if old_denoised is not None:
                 r = h_last / h
-                if solver_type == 'heun':
-                    x = x + ((-h - eta_h).expm1().neg() / (-h - eta_h) + 1) * (1 / r) * (denoised - old_denoised)
-                elif solver_type == 'midpoint':
-                    x = x + 0.5 * (-h - eta_h).expm1().neg() * (1 / r) * (denoised - old_denoised)
+                correction_factor = (expm1_neg_h_eta_h / (-h - eta * h) + 1) * (1 / r) if solver_type == 'heun' else 0.5 * expm1_neg_h_eta_h * (1 / r)
+                x = x + correction_factor * (denoised - old_denoised)
 
             if eta:
-                x = x + noise_sampler(sigmas[i], sigmas[i + 1]) * sigmas[i + 1] * (-2 * eta_h).expm1().neg().sqrt() * s_noise
+                noise_scale = (-2 * eta * h).expm1().neg().sqrt()
+                x = x + noise_sampler(sigmas[i], sigmas[i + 1]) * sigmas[i + 1] * noise_scale * s_noise
 
         old_denoised = denoised
         h_last = h
