@@ -16,12 +16,20 @@ def gen_empty_tokens(special_tokens, length):
     start_token = special_tokens.get("start", None)
     end_token = special_tokens.get("end", None)
     pad_token = special_tokens.get("pad")
-    output = []
+    
+    output_length = length
     if start_token is not None:
-        output.append(start_token)
+        output_length -= 1
     if end_token is not None:
-        output.append(end_token)
-    output += [pad_token] * (length - len(output))
+        output_length -= 1
+
+    output = [pad_token] * output_length
+    
+    if end_token is not None:
+        output.insert(0, end_token)
+    if start_token is not None:
+        output.insert(0, start_token)
+    
     return output
 
 class ClipTokenWeightEncoder:
