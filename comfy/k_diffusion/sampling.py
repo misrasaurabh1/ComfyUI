@@ -71,12 +71,10 @@ def get_ancestral_step(sigma_from, sigma_to, eta=1.):
 
 
 def default_noise_sampler(x, seed=None):
+    generator = None
     if seed is not None:
         generator = torch.Generator(device=x.device)
         generator.manual_seed(seed)
-    else:
-        generator = None
-
     return lambda sigma, sigma_next: torch.randn(x.size(), dtype=x.dtype, layout=x.layout, device=x.device, generator=generator)
 
 
@@ -1471,25 +1469,27 @@ def sample_seeds_2(model, x, sigmas, extra_args=None, callback=None, disable=Non
 
 @torch.no_grad()
 def sample_seeds_3(model, x, sigmas, extra_args=None, callback=None, disable=None, eta=1., s_noise=1., noise_sampler=None, r_1=1./3, r_2=2./3):
-    '''
+    """
     SEEDS-3 - Stochastic Explicit Exponential Derivative-free Solvers (VE Data Prediction) stage 3
     Arxiv: https://arxiv.org/abs/2305.14267
-    '''
-    extra_args = {} if extra_args is None else extra_args
+    """
+    extra_args = extra_args if extra_args is not None else {}
     seed = extra_args.get("seed", None)
-    noise_sampler = default_noise_sampler(x, seed=seed) if noise_sampler is None else noise_sampler
+    noise_sampler = noise_sampler or default_noise_sampler(x, seed=seed)
     s_in = x.new_ones([x.shape[0]])
 
     inject_noise = eta > 0 and s_noise > 0
 
     for i in trange(len(sigmas) - 1, disable=disable):
-        denoised = model(x, sigmas[i] * s_in, **extra_args)
+        sigma_i = sigmas[i]
+        sigma_next = sigmas[i + 1]
+        denoised = model(x, sigma_i * s_in, **extra_args)
         if callback is not None:
-            callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigmas[i], 'denoised': denoised})
-        if sigmas[i + 1] == 0:
+            callback({'x': x, 'i': i, 'sigma': sigma_i, 'sigma_hat': sigma_i, 'denoised': denoised})
+        if sigma_next == 0:
             x = denoised
         else:
-            t, t_next = -sigmas[i].log(), -sigmas[i + 1].log()
+            t, t_next = -sigma_i.log(), -sigma_next.log()
             h = t_next - t
             h_eta = h * (eta + 1)
             s_1 = t + r_1 * h
@@ -1498,25 +1498,30 @@ def sample_seeds_3(model, x, sigmas, extra_args=None, callback=None, disable=Non
 
             coeff_1, coeff_2, coeff_3 = (-r_1 * h_eta).expm1(), (-r_2 * h_eta).expm1(), (-h_eta).expm1()
             if inject_noise:
-                noise_coeff_1 = (-2 * r_1 * h * eta).expm1().neg().sqrt()
-                noise_coeff_2 = ((-2 * r_1 * h * eta).expm1() - (-2 * r_2 * h * eta).expm1()).sqrt()
-                noise_coeff_3 = ((-2 * r_2 * h * eta).expm1() - (-2 * h * eta).expm1()).sqrt()
-                noise_1, noise_2, noise_3 = noise_sampler(sigmas[i], sigma_s_1), noise_sampler(sigma_s_1, sigma_s_2), noise_sampler(sigma_s_2, sigmas[i + 1])
+                r_1_eta_h = -2 * r_1 * h * eta
+                r_2_eta_h = -2 * r_2 * h * eta
+                h_eta_neg = (-h * eta).expm1()
+
+                noise_coeff_1 = r_1_eta_h.expm1().neg().sqrt()
+                noise_coeff_2 = (r_1_eta_h.expm1() - r_2_eta_h.expm1()).sqrt()
+                noise_coeff_3 = (r_2_eta_h.expm1() - h_eta_neg).sqrt()
+
+                noise_1, noise_2, noise_3 = noise_sampler(sigma_i, sigma_s_1), noise_sampler(sigma_s_1, sigma_s_2), noise_sampler(sigma_s_2, sigma_next)
 
             # Step 1
             x_2 = (coeff_1 + 1) * x - coeff_1 * denoised
             if inject_noise:
-                x_2 = x_2 + sigma_s_1 * (noise_coeff_1 * noise_1) * s_noise
+                x_2 += sigma_s_1 * noise_coeff_1 * noise_1 * s_noise
             denoised_2 = model(x_2, sigma_s_1 * s_in, **extra_args)
 
             # Step 2
             x_3 = (coeff_2 + 1) * x - coeff_2 * denoised + (r_2 / r_1) * (coeff_2 / (r_2 * h_eta) + 1) * (denoised_2 - denoised)
             if inject_noise:
-                x_3 = x_3 + sigma_s_2 * (noise_coeff_2 * noise_1 + noise_coeff_1 * noise_2) * s_noise
+                x_3 += sigma_s_2 * (noise_coeff_2 * noise_1 + noise_coeff_1 * noise_2) * s_noise
             denoised_3 = model(x_3, sigma_s_2 * s_in, **extra_args)
 
             # Step 3
             x = (coeff_3 + 1) * x - coeff_3 * denoised + (1. / r_2) * (coeff_3 / h_eta + 1) * (denoised_3 - denoised)
             if inject_noise:
-                x = x + sigmas[i + 1] * (noise_coeff_3 * noise_1 + noise_coeff_2 * noise_2 + noise_coeff_1 * noise_3) * s_noise
+                x += sigma_next * (noise_coeff_3 * noise_1 + noise_coeff_2 * noise_2 + noise_coeff_1 * noise_3) * s_noise
     return x
