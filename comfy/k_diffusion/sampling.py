@@ -57,7 +57,8 @@ def get_sigmas_laplace(n, sigma_min, sigma_max, mu=0., beta=0.5, device='cpu'):
 
 def to_d(x, sigma, denoised):
     """Converts a denoiser output to a Karras ODE derivative."""
-    return (x - denoised) / utils.append_dims(sigma, x.ndim)
+    sigma_expanded = sigma.view([-1] + [1] * (x.ndim - 1))
+    return (x - denoised) / sigma_expanded
 
 
 def get_ancestral_step(sigma_from, sigma_to, eta=1.):
@@ -1351,12 +1352,16 @@ def sample_gradient_estimation(model, x, sigmas, extra_args=None, callback=None,
     s_in = x.new_ones([x.shape[0]])
     old_d = None
 
+    sigmas_next = sigmas[1:]  # Precompute the next sigmas to optimize `trange`
+
     for i in trange(len(sigmas) - 1, disable=disable):
-        denoised = model(x, sigmas[i] * s_in, **extra_args)
-        d = to_d(x, sigmas[i], denoised)
+        sigma = sigmas[i]
+        sigma_next = sigmas_next[i]  # Use precomputed next sigmas
+        denoised = model(x, sigma * s_in, **extra_args)
+        d = to_d(x, sigma, denoised)
         if callback is not None:
-            callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigmas[i], 'denoised': denoised})
-        dt = sigmas[i + 1] - sigmas[i]
+            callback({'x': x, 'i': i, 'sigma': sigma, 'sigma_hat': sigma, 'denoised': denoised})
+        dt = sigma_next - sigma
         if i == 0:
             # Euler method
             x = x + d * dt
