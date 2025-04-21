@@ -770,35 +770,48 @@ def sample_dpmpp_2m_sde(model, x, sigmas, extra_args=None, callback=None, disabl
 
     old_denoised = None
     h_last = None
-    h = None
 
     for i in trange(len(sigmas) - 1, disable=disable):
-        denoised = model(x, sigmas[i] * s_in, **extra_args)
+        sigma_i = sigmas[i]
+        sigma_ip1 = sigmas[i + 1]
+        denoised = model(x, sigma_i * s_in, **extra_args)
+        
         if callback is not None:
-            callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigmas[i], 'denoised': denoised})
-        if sigmas[i + 1] == 0:
+            callback({'x': x, 'i': i, 'sigma': sigma_i, 'sigma_hat': sigma_i, 'denoised': denoised})
+        
+        if sigma_ip1 == 0:
             # Denoising step
             x = denoised
         else:
             # DPM-Solver++(2M) SDE
-            t, s = -sigmas[i].log(), -sigmas[i + 1].log()
+            t = -sigma_i.log()
+            s = -sigma_ip1.log()
             h = s - t
             eta_h = eta * h
 
-            x = sigmas[i + 1] / sigmas[i] * (-eta_h).exp() * x + (-h - eta_h).expm1().neg() * denoised
+            exp_neg_eta_h = (-eta_h).exp()  # Pre-compute exponential once
+            n_exp_neg_eta_h = (-h - eta_h).exp()
+            expm1_n_exp_neg_eta_h = n_exp_neg_eta_h.neg().expm1()
+
+            x = (sigma_ip1 / sigma_i) * exp_neg_eta_h * x + expm1_n_exp_neg_eta_h * denoised
 
             if old_denoised is not None:
                 r = h_last / h
                 if solver_type == 'heun':
-                    x = x + ((-h - eta_h).expm1().neg() / (-h - eta_h) + 1) * (1 / r) * (denoised - old_denoised)
+                    adj = ((expm1_n_exp_neg_eta_h / (-h - eta_h)) + 1) * (1 / r)
                 elif solver_type == 'midpoint':
-                    x = x + 0.5 * (-h - eta_h).expm1().neg() * (1 / r) * (denoised - old_denoised)
+                    adj = 0.5 * expm1_n_exp_neg_eta_h * (1 / r)
+                    
+                x = x + adj * (denoised - old_denoised)
 
             if eta:
-                x = x + noise_sampler(sigmas[i], sigmas[i + 1]) * sigmas[i + 1] * (-2 * eta_h).expm1().neg().sqrt() * s_noise
+                noise = noise_sampler(sigma_i, sigma_ip1)
+                noise_adj = sigma_ip1 * (-2 * eta_h).expm1().neg().sqrt() * s_noise
+                x = x + noise * noise_adj
 
         old_denoised = denoised
         h_last = h
+        
     return x
 
 @torch.no_grad()
