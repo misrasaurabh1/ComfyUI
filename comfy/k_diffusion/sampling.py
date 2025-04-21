@@ -10,6 +10,7 @@ from . import utils
 from . import deis
 import comfy.model_patcher
 import comfy.model_sampling
+from tqdm import tqdm
 
 def append_zero(x):
     return torch.cat([x, x.new_zeros([1])])
@@ -1272,10 +1273,6 @@ def res_multistep(model, x, sigmas, extra_args=None, callback=None, disable=None
     seed = extra_args.get("seed", None)
     noise_sampler = default_noise_sampler(x, seed=seed) if noise_sampler is None else noise_sampler
     s_in = x.new_ones([x.shape[0]])
-    sigma_fn = lambda t: t.neg().exp()
-    t_fn = lambda sigma: sigma.log().neg()
-    phi1_fn = lambda t: torch.expm1(t) / t
-    phi2_fn = lambda t: (phi1_fn(t) - 1.0) / t
 
     old_denoised = None
     uncond_denoised = None
@@ -1288,22 +1285,21 @@ def res_multistep(model, x, sigmas, extra_args=None, callback=None, disable=None
         model_options = extra_args.get("model_options", {}).copy()
         extra_args["model_options"] = comfy.model_patcher.set_model_options_post_cfg_function(model_options, post_cfg_function, disable_cfg1_optimization=True)
 
-    for i in trange(len(sigmas) - 1, disable=disable):
+    for i in tqdm(range(len(sigmas) - 1), disable=disable):
         denoised = model(x, sigmas[i] * s_in, **extra_args)
         sigma_down, sigma_up = get_ancestral_step(sigmas[i], sigmas[i + 1], eta=eta)
         if callback is not None:
             callback({"x": x, "i": i, "sigma": sigmas[i], "sigma_hat": sigmas[i], "denoised": denoised})
+
         if sigma_down == 0 or old_denoised is None:
-            # Euler method
             if cfg_pp:
                 d = to_d(x, sigmas[i], uncond_denoised)
-                x = denoised + d * sigma_down
+                x.copy_(denoised).add_(d.mul(sigma_down))
             else:
                 d = to_d(x, sigmas[i], denoised)
                 dt = sigma_down - sigmas[i]
-                x = x + d * dt
+                x.add_(d.mul(dt))
         else:
-            # Second order multistep method in https://arxiv.org/pdf/2308.02157
             t, t_next, t_prev = t_fn(sigmas[i]), t_fn(sigma_down), t_fn(sigmas[i - 1])
             h = t_next - t
             c2 = (t_prev - t) / h
@@ -1313,19 +1309,16 @@ def res_multistep(model, x, sigmas, extra_args=None, callback=None, disable=None
             b2 = torch.nan_to_num(phi2_val / c2, nan=0.0)
 
             if cfg_pp:
-                x = x + (denoised - uncond_denoised)
-                x = sigma_fn(h) * x + h * (b1 * uncond_denoised + b2 * old_denoised)
+                x.sub_(uncond_denoised).add_(denoised)
+                x.copy_(sigma_fn(h) * x).add_(h * (b1 * uncond_denoised + b2 * old_denoised))
             else:
-                x = sigma_fn(h) * x + h * (b1 * denoised + b2 * old_denoised)
+                x.copy_(sigma_fn(h) * x).add_(h * (b1 * denoised + b2 * old_denoised))
 
-        # Noise addition
         if sigmas[i + 1] > 0:
-            x = x + noise_sampler(sigmas[i], sigmas[i + 1]) * s_noise * sigma_up
+            x.add_(noise_sampler(sigmas[i], sigmas[i + 1]).mul(s_noise * sigma_up))
 
-        if cfg_pp:
-            old_denoised = uncond_denoised
-        else:
-            old_denoised = denoised
+        old_denoised = uncond_denoised if cfg_pp else denoised
+
     return x
 
 @torch.no_grad()
