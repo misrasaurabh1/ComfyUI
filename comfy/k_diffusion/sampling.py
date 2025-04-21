@@ -375,18 +375,28 @@ def sample_lms(model, x, sigmas, extra_args=None, callback=None, disable=None, o
     extra_args = {} if extra_args is None else extra_args
     s_in = x.new_ones([x.shape[0]])
     sigmas_cpu = sigmas.detach().cpu().numpy()
-    ds = []
+
+    ds = [None] * order  # Pre-allocate list for speed
+    new_x_buffer = torch.empty_like(x)  # Pre-allocate buffer memory for new x computation
+
     for i in trange(len(sigmas) - 1, disable=disable):
         denoised = model(x, sigmas[i] * s_in, **extra_args)
         d = to_d(x, sigmas[i], denoised)
+        
+        ds.pop(0)
         ds.append(d)
-        if len(ds) > order:
-            ds.pop(0)
+        
         if callback is not None:
             callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigmas[i], 'denoised': denoised})
+        
         cur_order = min(i + 1, order)
         coeffs = [linear_multistep_coeff(cur_order, sigmas_cpu, i, j) for j in range(cur_order)]
-        x = x + sum(coeff * d for coeff, d in zip(coeffs, reversed(ds)))
+        
+        new_x = new_x_buffer.zero_()  # Reset new_x_buffer to zero
+        for coeff, d_val in zip(coeffs, ds[-cur_order:]):
+            new_x.add_(coeff, d_val)  # In-place addition to reduce memory allocations
+        x.add_(new_x)
+        
     return x
 
 
