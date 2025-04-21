@@ -996,9 +996,9 @@ def sample_ipndm(model, x, sigmas, extra_args=None, callback=None, disable=None,
     x_next = x
 
     buffer_model = []
-    for i in trange(len(sigmas) - 1, disable=disable):
-        t_cur = sigmas[i]
-        t_next = sigmas[i + 1]
+    len_sigmas = len(sigmas)
+    for i in trange(len_sigmas - 1, disable=disable):
+        t_cur, t_next = sigmas[i], sigmas[i + 1]
 
         x_cur = x_next
 
@@ -1009,18 +1009,24 @@ def sample_ipndm(model, x, sigmas, extra_args=None, callback=None, disable=None,
         d_cur = (x_cur - denoised) / t_cur
 
         order = min(max_order, i+1)
-        if order == 1:      # First Euler step.
+        if order == 1:  # First Euler step.
             x_next = x_cur + (t_next - t_cur) * d_cur
-        elif order == 2:    # Use one history point.
-            x_next = x_cur + (t_next - t_cur) * (3 * d_cur - buffer_model[-1]) / 2
-        elif order == 3:    # Use two history points.
-            x_next = x_cur + (t_next - t_cur) * (23 * d_cur - 16 * buffer_model[-1] + 5 * buffer_model[-2]) / 12
-        elif order == 4:    # Use three history points.
-            x_next = x_cur + (t_next - t_cur) * (55 * d_cur - 59 * buffer_model[-1] + 37 * buffer_model[-2] - 9 * buffer_model[-3]) / 24
+        else:
+            # Precompute common terms
+            delta_t = t_next - t_cur
+            if order == 2:  # Use one history point.
+                x_next = x_cur + delta_t * (3 * d_cur - buffer_model[-1]) / 2
+            elif order == 3:  # Use two history points.
+                bm1 = buffer_model[-1]
+                x_next = x_cur + delta_t * (23 * d_cur - 16 * bm1 + 5 * buffer_model[-2]) / 12
+            elif order == 4:  # Use three history points.
+                bm1 = buffer_model[-1]
+                bm2 = buffer_model[-2]
+                x_next = x_cur + delta_t * (55 * d_cur - 59 * bm1 + 37 * bm2 - 9 * buffer_model[-3]) / 24
 
-        if len(buffer_model) == max_order - 1:
-            for k in range(max_order - 2):
-                buffer_model[k] = buffer_model[k+1]
+        if order > 1:
+            # Shift buffer_model elements left
+            buffer_model[:-1] = buffer_model[1:]
             buffer_model[-1] = d_cur
         else:
             buffer_model.append(d_cur)
