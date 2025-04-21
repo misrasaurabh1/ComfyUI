@@ -57,7 +57,8 @@ def get_sigmas_laplace(n, sigma_min, sigma_max, mu=0., beta=0.5, device='cpu'):
 
 def to_d(x, sigma, denoised):
     """Converts a denoiser output to a Karras ODE derivative."""
-    return (x - denoised) / utils.append_dims(sigma, x.ndim)
+    sigma_expanded = utils.append_dims(sigma, x.ndim)
+    return (x - denoised) / sigma_expanded
 
 
 def get_ancestral_step(sigma_from, sigma_to, eta=1.):
@@ -145,26 +146,34 @@ class BrownianTreeNoiseSampler:
 @torch.no_grad()
 def sample_euler(model, x, sigmas, extra_args=None, callback=None, disable=None, s_churn=0., s_tmin=0., s_tmax=float('inf'), s_noise=1.):
     """Implements Algorithm 2 (Euler steps) from Karras et al. (2022)."""
-    extra_args = {} if extra_args is None else extra_args
+    extra_args = extra_args or {}
     s_in = x.new_ones([x.shape[0]])
-    for i in trange(len(sigmas) - 1, disable=disable):
-        if s_churn > 0:
-            gamma = min(s_churn / (len(sigmas) - 1), 2 ** 0.5 - 1) if s_tmin <= sigmas[i] <= s_tmax else 0.
-            sigma_hat = sigmas[i] * (gamma + 1)
+    len_sigmas_minus_1 = len(sigmas) - 1  # cache length value
+    x_shape = x.shape
+
+    for i in trange(len_sigmas_minus_1, disable=disable):
+        sigma_i = sigmas[i]
+        if s_churn > 0 and s_tmin <= sigma_i <= s_tmax:
+            gamma = min(s_churn / len_sigmas_minus_1, 2 ** 0.5 - 1)
         else:
             gamma = 0
-            sigma_hat = sigmas[i]
+
+        sigma_hat = sigma_i * (gamma + 1)
 
         if gamma > 0:
-            eps = torch.randn_like(x) * s_noise
-            x = x + eps * (sigma_hat ** 2 - sigmas[i] ** 2) ** 0.5
+            noise = torch.randn(x_shape, device=x.device) * s_noise
+            noise_scale = (sigma_hat ** 2 - sigma_i ** 2) ** 0.5
+            x.add_(noise, alpha=noise_scale)  # in-place addition
+
         denoised = model(x, sigma_hat * s_in, **extra_args)
         d = to_d(x, sigma_hat, denoised)
-        if callback is not None:
-            callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigma_hat, 'denoised': denoised})
+
+        if callback:
+            callback({'x': x, 'i': i, 'sigma': sigma_i, 'sigma_hat': sigma_hat, 'denoised': denoised})
+
         dt = sigmas[i + 1] - sigma_hat
-        # Euler method
-        x = x + d * dt
+        x.add_(d, alpha=dt)  # in-place addition for Euler method
+
     return x
 
 
