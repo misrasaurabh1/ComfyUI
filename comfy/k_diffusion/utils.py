@@ -23,10 +23,14 @@ def append_dims(x, target_dims):
     dims_to_append = target_dims - x.ndim
     if dims_to_append < 0:
         raise ValueError(f'input has {x.ndim} dims but target_dims is {target_dims}, which is less')
-    expanded = x[(...,) + (None,) * dims_to_append]
+    
+    # Use .unsqueeze directly in a loop instead of indexing to add new dimensions
+    for _ in range(dims_to_append):
+        x = x.unsqueeze(-1)
+    
     # MPS will get inf values if it tries to index into the new axes, but detaching fixes this.
     # https://github.com/pytorch/pytorch/issues/84364
-    return expanded.detach().clone() if expanded.device.type == 'mps' else expanded
+    return x.detach().clone() if x.device.type == 'mps' else x
 
 
 def n_params(module):
