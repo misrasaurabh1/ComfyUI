@@ -20,8 +20,12 @@ def get_sigmas_karras(n, sigma_min, sigma_max, rho=7., device='cpu'):
     ramp = torch.linspace(0, 1, n, device=device)
     min_inv_rho = sigma_min ** (1 / rho)
     max_inv_rho = sigma_max ** (1 / rho)
+    
+    # Calculate the sigmas and append zero directly
     sigmas = (max_inv_rho + ramp * (min_inv_rho - max_inv_rho)) ** rho
-    return append_zero(sigmas).to(device)
+    sigmas_with_zero = torch.cat([sigmas, sigmas.new_zeros([1])])
+    
+    return sigmas_with_zero
 
 
 def get_sigmas_exponential(n, sigma_min, sigma_max, device='cpu'):
