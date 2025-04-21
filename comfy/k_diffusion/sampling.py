@@ -525,22 +525,24 @@ class DPMSolver(nn.Module):
         rtol = torch.tensor(rtol)
         s = t_start
         x_prev = x
-        accept = True
         pid = PIDStepSizeController(h_init, pcoeff, icoeff, dcoeff, 1.5 if eta else order, accept_safety)
         info = {'steps': 0, 'nfe': 0, 'n_accept': 0, 'n_reject': 0}
-
-        while s < t_end - 1e-5 if forward else s > t_end + 1e-5:
+        sigma_s = self.sigma(s)
+        
+        while (s < t_end - 1e-5) if forward else (s > t_end + 1e-5):
             eps_cache = {}
             t = torch.minimum(t_end, s + pid.h) if forward else torch.maximum(t_end, s + pid.h)
+            sigma_t = self.sigma(t)
             if eta:
-                sd, su = get_ancestral_step(self.sigma(s), self.sigma(t), eta)
+                sd, su = get_ancestral_step(sigma_s, sigma_t, eta)
                 t_ = torch.minimum(t_end, self.t(sd))
-                su = (self.sigma(t) ** 2 - self.sigma(t_) ** 2) ** 0.5
+                su = (sigma_t ** 2 - self.sigma(t_) ** 2) ** 0.5
             else:
-                t_, su = t, 0.
+                t_ = t
+                su = 0.
 
             eps, eps_cache = self.eps(eps_cache, 'eps', x, s)
-            denoised = x - self.sigma(s) * eps
+            denoised = x - sigma_s * eps
 
             if order == 2:
                 x_low, eps_cache = self.dpm_solver_1_step(x, s, t_, eps_cache=eps_cache)
@@ -548,13 +550,15 @@ class DPMSolver(nn.Module):
             else:
                 x_low, eps_cache = self.dpm_solver_2_step(x, s, t_, r1=1 / 3, eps_cache=eps_cache)
                 x_high, eps_cache = self.dpm_solver_3_step(x, s, t_, eps_cache=eps_cache)
+                
             delta = torch.maximum(atol, rtol * torch.maximum(x_low.abs(), x_prev.abs()))
             error = torch.linalg.norm((x_low - x_high) / delta) / x.numel() ** 0.5
             accept = pid.propose_step(error)
             if accept:
                 x_prev = x_low
-                x = x_high + su * s_noise * noise_sampler(self.sigma(s), self.sigma(t))
-                s = t
+                x = x_high + su * s_noise * noise_sampler(sigma_s, sigma_t)
+                s = t  # Update sigma_s for the new step
+                sigma_s = sigma_t
                 info['n_accept'] += 1
             else:
                 info['n_reject'] += 1
