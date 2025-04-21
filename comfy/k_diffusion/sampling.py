@@ -71,12 +71,9 @@ def get_ancestral_step(sigma_from, sigma_to, eta=1.):
 
 
 def default_noise_sampler(x, seed=None):
+    generator = torch.Generator(device=x.device) if seed is not None else None
     if seed is not None:
-        generator = torch.Generator(device=x.device)
         generator.manual_seed(seed)
-    else:
-        generator = None
-
     return lambda sigma, sigma_next: torch.randn(x.size(), dtype=x.dtype, layout=x.layout, device=x.device, generator=generator)
 
 
@@ -199,25 +196,33 @@ def sample_euler_ancestral_RF(model, x, sigmas, extra_args=None, callback=None, 
     seed = extra_args.get("seed", None)
     noise_sampler = default_noise_sampler(x, seed=seed) if noise_sampler is None else noise_sampler
     s_in = x.new_ones([x.shape[0]])
+    
     for i in trange(len(sigmas) - 1, disable=disable):
-        denoised = model(x, sigmas[i] * s_in, **extra_args)
-        # sigma_down, sigma_up = get_ancestral_step(sigmas[i], sigmas[i + 1], eta=eta)
+        sigma_i = sigmas[i]
+        sigma_ip1 = sigmas[i+1]
+        denoised = model(x, sigma_i * s_in, **extra_args)
+        
         if callback is not None:
-            callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigmas[i], 'denoised': denoised})
-
-        if sigmas[i + 1] == 0:
+            callback({'x': x, 'i': i, 'sigma': sigma_i, 'sigma_hat': sigma_i, 'denoised': denoised})
+        
+        if sigma_ip1 == 0:
             x = denoised
         else:
-            downstep_ratio = 1 + (sigmas[i + 1] / sigmas[i] - 1) * eta
-            sigma_down = sigmas[i + 1] * downstep_ratio
-            alpha_ip1 = 1 - sigmas[i + 1]
+            downstep_ratio = 1 + (sigma_ip1 / sigma_i - 1) * eta
+            sigma_down = sigma_ip1 * downstep_ratio
+
+            alpha_ip1 = 1 - sigma_ip1
             alpha_down = 1 - sigma_down
-            renoise_coeff = (sigmas[i + 1]**2 - sigma_down**2 * alpha_ip1**2 / alpha_down**2)**0.5
+
+            renoise_coeff = (sigma_ip1**2 - sigma_down**2 * (alpha_ip1 / alpha_down)**2)**0.5
+
             # Euler method
-            sigma_down_i_ratio = sigma_down / sigmas[i]
+            sigma_down_i_ratio = sigma_down / sigma_i
             x = sigma_down_i_ratio * x + (1 - sigma_down_i_ratio) * denoised
+
             if eta > 0:
-                x = (alpha_ip1 / alpha_down) * x + noise_sampler(sigmas[i], sigmas[i + 1]) * s_noise * renoise_coeff
+                x = (alpha_ip1 / alpha_down) * x + noise_sampler(sigma_i, sigma_ip1) * s_noise * renoise_coeff
+
     return x
 
 @torch.no_grad()
