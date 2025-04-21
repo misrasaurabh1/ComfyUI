@@ -65,18 +65,21 @@ def get_ancestral_step(sigma_from, sigma_to, eta=1.):
     of noise to add (sigma_up) when doing an ancestral sampling step."""
     if not eta:
         return sigma_to, 0.
-    sigma_up = min(sigma_to, eta * (sigma_to ** 2 * (sigma_from ** 2 - sigma_to ** 2) / sigma_from ** 2) ** 0.5)
-    sigma_down = (sigma_to ** 2 - sigma_up ** 2) ** 0.5
+    
+    # Precompute constants and intermediate values to speed up computation
+    sigma_from_2 = sigma_from ** 2
+    sigma_to_2 = sigma_to ** 2
+    fraction = (sigma_from_2 - sigma_to_2) / sigma_from_2
+    
+    sigma_up = min(sigma_to, eta * (sigma_to_2 * fraction) ** 0.5)
+    sigma_down = (sigma_to_2 - sigma_up ** 2) ** 0.5
     return sigma_down, sigma_up
 
 
 def default_noise_sampler(x, seed=None):
-    if seed is not None:
-        generator = torch.Generator(device=x.device)
+    generator = torch.Generator(device=x.device) if seed is not None else None
+    if generator:
         generator.manual_seed(seed)
-    else:
-        generator = None
-
     return lambda sigma, sigma_next: torch.randn(x.size(), dtype=x.dtype, layout=x.layout, device=x.device, generator=generator)
 
 
@@ -436,19 +439,28 @@ class DPMSolver(nn.Module):
         return t.neg().exp()
 
     def eps(self, eps_cache, key, x, t, *args, **kwargs):
-        if key in eps_cache:
-            return eps_cache[key], eps_cache
-        sigma = self.sigma(t) * x.new_ones([x.shape[0]])
-        eps = (x - self.model(x, sigma, *args, **self.extra_args, **kwargs)) / self.sigma(t)
+        cached_eps = eps_cache.get(key)
+        if cached_eps is not None:
+            return cached_eps, eps_cache
+        
+        # Cache sigma values to avoid redundant computations
+        sigma_val = self.sigma(t)
+        sigma_mult = x.new_ones([x.shape[0]]) * sigma_val
+        model_output = self.model(x, sigma_mult, *args, **self.extra_args, **kwargs)
+        eps = (x - model_output) / sigma_val
+        
         if self.eps_callback is not None:
             self.eps_callback()
-        return eps, {key: eps, **eps_cache}
+            
+        eps_cache[key] = eps
+        return eps, eps_cache
 
     def dpm_solver_1_step(self, x, t, t_next, eps_cache=None):
         eps_cache = {} if eps_cache is None else eps_cache
         h = t_next - t
         eps, eps_cache = self.eps(eps_cache, 'eps', x, t)
-        x_1 = x - self.sigma(t_next) * h.expm1() * eps
+        sigma_t_next = self.sigma(t_next)
+        x_1 = x - sigma_t_next * h.expm1() * eps
         return x_1, eps_cache
 
     def dpm_solver_2_step(self, x, t, t_next, r1=1 / 2, eps_cache=None):
@@ -456,9 +468,11 @@ class DPMSolver(nn.Module):
         h = t_next - t
         eps, eps_cache = self.eps(eps_cache, 'eps', x, t)
         s1 = t + r1 * h
-        u1 = x - self.sigma(s1) * (r1 * h).expm1() * eps
+        sigma_s1 = self.sigma(s1)
+        sigma_t_next = self.sigma(t_next)
+        u1 = x - sigma_s1 * (r1 * h).expm1() * eps
         eps_r1, eps_cache = self.eps(eps_cache, 'eps_r1', u1, s1)
-        x_2 = x - self.sigma(t_next) * h.expm1() * eps - self.sigma(t_next) / (2 * r1) * h.expm1() * (eps_r1 - eps)
+        x_2 = x - sigma_t_next * h.expm1() * eps - sigma_t_next / (2 * r1) * h.expm1() * (eps_r1 - eps)
         return x_2, eps_cache
 
     def dpm_solver_3_step(self, x, t, t_next, r1=1 / 3, r2=2 / 3, eps_cache=None):
@@ -467,11 +481,14 @@ class DPMSolver(nn.Module):
         eps, eps_cache = self.eps(eps_cache, 'eps', x, t)
         s1 = t + r1 * h
         s2 = t + r2 * h
-        u1 = x - self.sigma(s1) * (r1 * h).expm1() * eps
+        sigma_s1 = self.sigma(s1)
+        sigma_s2 = self.sigma(s2)
+        sigma_t_next = self.sigma(t_next)
+        u1 = x - sigma_s1 * (r1 * h).expm1() * eps
         eps_r1, eps_cache = self.eps(eps_cache, 'eps_r1', u1, s1)
-        u2 = x - self.sigma(s2) * (r2 * h).expm1() * eps - self.sigma(s2) * (r2 / r1) * ((r2 * h).expm1() / (r2 * h) - 1) * (eps_r1 - eps)
+        u2 = x - sigma_s2 * (r2 * h).expm1() * eps - sigma_s2 * (r2 / r1) * ((r2 * h).expm1() / (r2 * h) - 1) * (eps_r1 - eps)
         eps_r2, eps_cache = self.eps(eps_cache, 'eps_r2', u2, s2)
-        x_3 = x - self.sigma(t_next) * h.expm1() * eps - self.sigma(t_next) / r2 * (h.expm1() / h - 1) * (eps_r2 - eps)
+        x_3 = x - sigma_t_next * h.expm1() * eps - sigma_t_next / r2 * (h.expm1() / h - 1) * (eps_r2 - eps)
         return x_3, eps_cache
 
     def dpm_solver_fast(self, x, t_start, t_end, nfe, eta=0., s_noise=1., noise_sampler=None):
@@ -489,27 +506,30 @@ class DPMSolver(nn.Module):
 
         for i in range(len(orders)):
             eps_cache = {}
-            t, t_next = ts[i], ts[i + 1]
+            current_t, next_t = ts[i], ts[i + 1]
             if eta:
-                sd, su = get_ancestral_step(self.sigma(t), self.sigma(t_next), eta)
-                t_next_ = torch.minimum(t_end, self.t(sd))
-                su = (self.sigma(t_next) ** 2 - self.sigma(t_next_) ** 2) ** 0.5
+                sigma_from, sigma_to = self.sigma(current_t), self.sigma(next_t)
+                sd, su = get_ancestral_step(sigma_from, sigma_to, eta)
+                min_t = self.t(self.sigma(current_t) + torch.tensor(eta))
+                next_t_ = torch.minimum(t_end, min_t)
+                su = (sigma_to ** 2 - self.sigma(next_t_) ** 2) ** 0.5
             else:
-                t_next_, su = t_next, 0.
+                next_t_, su = next_t, 0.
 
-            eps, eps_cache = self.eps(eps_cache, 'eps', x, t)
-            denoised = x - self.sigma(t) * eps
+            eps, eps_cache = self.eps(eps_cache, 'eps', x, current_t)
+            denoised = x - self.sigma(current_t) * eps
+            
             if self.info_callback is not None:
-                self.info_callback({'x': x, 'i': i, 't': ts[i], 't_up': t, 'denoised': denoised})
+                self.info_callback({'x': x, 'i': i, 't': ts[i], 't_up': current_t, 'denoised': denoised})
 
             if orders[i] == 1:
-                x, eps_cache = self.dpm_solver_1_step(x, t, t_next_, eps_cache=eps_cache)
+                x, eps_cache = self.dpm_solver_1_step(x, current_t, next_t_, eps_cache=eps_cache)
             elif orders[i] == 2:
-                x, eps_cache = self.dpm_solver_2_step(x, t, t_next_, eps_cache=eps_cache)
+                x, eps_cache = self.dpm_solver_2_step(x, current_t, next_t_, eps_cache=eps_cache)
             else:
-                x, eps_cache = self.dpm_solver_3_step(x, t, t_next_, eps_cache=eps_cache)
+                x, eps_cache = self.dpm_solver_3_step(x, current_t, next_t_, eps_cache=eps_cache)
 
-            x = x + su * s_noise * noise_sampler(self.sigma(t), self.sigma(t_next))
+            x = x + su * s_noise * noise_sampler(self.sigma(current_t), self.sigma(next_t))
 
         return x
 
