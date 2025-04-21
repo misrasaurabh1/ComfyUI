@@ -4,13 +4,13 @@ import numpy as np
 from functools import partial
 
 from .util import extract_into_tensor, make_beta_schedule
+from typing import Any, Dict, Optional
 
 
 class AbstractLowScaleModel(nn.Module):
-    # for concatenating a downsampled image to the latent representation
-    def __init__(self, noise_schedule_config=None):
+    def __init__(self, noise_schedule_config: Optional[Dict[str, Any]] = None) -> None:
         super(AbstractLowScaleModel, self).__init__()
-        if noise_schedule_config is not None:
+        if noise_schedule_config:
             self.register_schedule(**noise_schedule_config)
 
     def register_schedule(self, beta_schedule="linear", timesteps=1000,
