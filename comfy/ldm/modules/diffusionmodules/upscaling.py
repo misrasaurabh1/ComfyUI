@@ -7,9 +7,10 @@ from .util import extract_into_tensor, make_beta_schedule
 
 
 class AbstractLowScaleModel(nn.Module):
+
     # for concatenating a downsampled image to the latent representation
     def __init__(self, noise_schedule_config=None):
-        super(AbstractLowScaleModel, self).__init__()
+        super().__init__()
         if noise_schedule_config is not None:
             self.register_schedule(**noise_schedule_config)
 
