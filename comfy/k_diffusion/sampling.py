@@ -475,41 +475,43 @@ class DPMSolver(nn.Module):
         return x_3, eps_cache
 
     def dpm_solver_fast(self, x, t_start, t_end, nfe, eta=0., s_noise=1., noise_sampler=None):
-        noise_sampler = default_noise_sampler(x, seed=self.extra_args.get("seed", None)) if noise_sampler is None else noise_sampler
         if not t_end > t_start and eta:
             raise ValueError('eta must be 0 for reverse sampling')
+
+        noise_sampler = default_noise_sampler(x, seed=self.extra_args.get("seed", None)) if noise_sampler is None else noise_sampler
 
         m = math.floor(nfe / 3) + 1
         ts = torch.linspace(t_start, t_end, m + 1, device=x.device)
 
-        if nfe % 3 == 0:
-            orders = [3] * (m - 2) + [2, 1]
-        else:
-            orders = [3] * (m - 1) + [nfe % 3]
+        orders = [3] * (m - 1) + [nfe % 3] if nfe % 3 else [3] * m
 
-        for i in range(len(orders)):
-            eps_cache = {}
+        sigma_ts = self.sigma(ts)
+        denoised_cache = {}
+
+        for i, order in enumerate(orders):
             t, t_next = ts[i], ts[i + 1]
+            sigma_t, sigma_t_next = sigma_ts[i], sigma_ts[i + 1]
             if eta:
-                sd, su = get_ancestral_step(self.sigma(t), self.sigma(t_next), eta)
-                t_next_ = torch.minimum(t_end, self.t(sd))
-                su = (self.sigma(t_next) ** 2 - self.sigma(t_next_) ** 2) ** 0.5
+                sd, su = get_ancestral_step(sigma_t.item(), sigma_t_next.item(), eta)
+                t_next_ = torch.minimum(t_end, self.t(sd), device=x.device)
+                su = math.sqrt(sigma_t_next.item() ** 2 - self.sigma(t_next_).item() ** 2)
             else:
                 t_next_, su = t_next, 0.
 
-            eps, eps_cache = self.eps(eps_cache, 'eps', x, t)
-            denoised = x - self.sigma(t) * eps
+            eps, denoised_cache = self.eps(denoised_cache, 'eps', x, t)
+            denoised = x - sigma_t * eps
+
             if self.info_callback is not None:
-                self.info_callback({'x': x, 'i': i, 't': ts[i], 't_up': t, 'denoised': denoised})
+                self.info_callback({'x': x, 'i': i, 't': t, 't_up': t, 'denoised': denoised})
 
-            if orders[i] == 1:
-                x, eps_cache = self.dpm_solver_1_step(x, t, t_next_, eps_cache=eps_cache)
-            elif orders[i] == 2:
-                x, eps_cache = self.dpm_solver_2_step(x, t, t_next_, eps_cache=eps_cache)
+            if order == 1:
+                x, denoised_cache = self.dpm_solver_1_step(x, t, t_next_, eps_cache=denoised_cache)
+            elif order == 2:
+                x, denoised_cache = self.dpm_solver_2_step(x, t, t_next_, eps_cache=denoised_cache)
             else:
-                x, eps_cache = self.dpm_solver_3_step(x, t, t_next_, eps_cache=eps_cache)
+                x, denoised_cache = self.dpm_solver_3_step(x, t, t_next_, eps_cache=denoised_cache)
 
-            x = x + su * s_noise * noise_sampler(self.sigma(t), self.sigma(t_next))
+            x = x + su * s_noise * noise_sampler(sigma_t, sigma_t_next)
 
         return x
 
@@ -572,11 +574,18 @@ def sample_dpm_fast(model, x, sigma_min, sigma_max, n, extra_args=None, callback
     """DPM-Solver-Fast (fixed step size). See https://arxiv.org/abs/2206.00927."""
     if sigma_min <= 0 or sigma_max <= 0:
         raise ValueError('sigma_min and sigma_max must not be 0')
+    
+    dpm_solver = DPMSolver(model, extra_args)
+    
+    if callback is not None:
+        dpm_solver.info_callback = lambda info: callback({'sigma': dpm_solver.sigma(info['t']), 'sigma_hat': dpm_solver.sigma(info['t_up']), **info})
+    
+    t_start, t_end = dpm_solver.t(torch.tensor(sigma_max, device=x.device)), dpm_solver.t(torch.tensor(sigma_min, device=x.device))
+    
     with tqdm(total=n, disable=disable) as pbar:
-        dpm_solver = DPMSolver(model, extra_args, eps_callback=pbar.update)
-        if callback is not None:
-            dpm_solver.info_callback = lambda info: callback({'sigma': dpm_solver.sigma(info['t']), 'sigma_hat': dpm_solver.sigma(info['t_up']), **info})
-        return dpm_solver.dpm_solver_fast(x, dpm_solver.t(torch.tensor(sigma_max)), dpm_solver.t(torch.tensor(sigma_min)), n, eta, s_noise, noise_sampler)
+        dpm_solver.eps_callback = pbar.update
+        
+        return dpm_solver.dpm_solver_fast(x, t_start, t_end, n, eta, s_noise, noise_sampler)
 
 
 @torch.no_grad()
