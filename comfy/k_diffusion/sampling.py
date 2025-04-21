@@ -360,14 +360,23 @@ def sample_dpm_2_ancestral_RF(model, x, sigmas, extra_args=None, callback=None, 
 def linear_multistep_coeff(order, t, i, j):
     if order - 1 > i:
         raise ValueError(f'Order {order} too high for step {i}')
+    
+    t_i_j = t[i - j]  # Store this value once
+    coeff = []
+    
+    # Precompute the coefficients for the polynomial
+    for k in range(order):
+        if j != k:
+            t_i_k = t[i - k]
+            coeff.append((t_i_k, 1 / (t_i_j - t_i_k)))
+
     def fn(tau):
         prod = 1.
-        for k in range(order):
-            if j == k:
-                continue
-            prod *= (tau - t[i - k]) / (t[i - j] - t[i - k])
+        for t_i_k, coef in coeff:
+            prod *= (tau - t_i_k) * coef
         return prod
-    return integrate.quad(fn, t[i], t[i + 1], epsrel=1e-4)[0]
+    
+    return integrate.quad(fn, t[i], t[i+1], epsrel=1e-4)[0]
 
 
 @torch.no_grad()
