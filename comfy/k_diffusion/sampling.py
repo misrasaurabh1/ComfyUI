@@ -731,26 +731,31 @@ def sample_dpmpp_sde(model, x, sigmas, extra_args=None, callback=None, disable=N
 @torch.no_grad()
 def sample_dpmpp_2m(model, x, sigmas, extra_args=None, callback=None, disable=None):
     """DPM-Solver++(2M)."""
-    extra_args = {} if extra_args is None else extra_args
+    extra_args = extra_args if extra_args is not None else {}
     s_in = x.new_ones([x.shape[0]])
-    sigma_fn = lambda t: t.neg().exp()
-    t_fn = lambda sigma: sigma.log().neg()
+    sigma_fn = lambda t: torch.exp(-t)
+    t_fn = lambda sigma: -torch.log(sigma)
     old_denoised = None
 
     for i in trange(len(sigmas) - 1, disable=disable):
-        denoised = model(x, sigmas[i] * s_in, **extra_args)
+        sigma_i = sigmas[i] * s_in  # Precompute this once.
+        denoised = model(x, sigma_i, **extra_args)
+        
         if callback is not None:
             callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigmas[i], 'denoised': denoised})
+        
         t, t_next = t_fn(sigmas[i]), t_fn(sigmas[i + 1])
         h = t_next - t
+        sigma_ratio = sigma_fn(t_next) / sigma_fn(t)  # Precompute this once.
+
         if old_denoised is None or sigmas[i + 1] == 0:
-            x = (sigma_fn(t_next) / sigma_fn(t)) * x - (-h).expm1() * denoised
+            x = sigma_ratio * x - torch.expm1(-h) * denoised
         else:
-            h_last = t - t_fn(sigmas[i - 1])
-            r = h_last / h
-            denoised_d = (1 + 1 / (2 * r)) * denoised - (1 / (2 * r)) * old_denoised
-            x = (sigma_fn(t_next) / sigma_fn(t)) * x - (-h).expm1() * denoised_d
+            denoised_d = denoised + (denoised - old_denoised) / (2 * h / (t - t_fn(sigmas[i - 1])) - 2)
+            x = sigma_ratio * x - torch.expm1(-h) * denoised_d
+
         old_denoised = denoised
+
     return x
 
 @torch.no_grad()
