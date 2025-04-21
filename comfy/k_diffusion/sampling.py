@@ -77,7 +77,9 @@ def default_noise_sampler(x, seed=None):
     else:
         generator = None
 
-    return lambda sigma, sigma_next: torch.randn(x.size(), dtype=x.dtype, layout=x.layout, device=x.device, generator=generator)
+    # Create the noise tensor once and reuse it, updating the generator each time
+    noise_tensor = torch.randn(x.size(), dtype=x.dtype, layout=x.layout, device=x.device, generator=generator)
+    return lambda sigma, sigma_next: noise_tensor.normal_()
 
 
 class BatchedBrownianTree:
@@ -898,13 +900,27 @@ def generic_step_sampler(model, x, sigmas, extra_args=None, callback=None, disab
     noise_sampler = default_noise_sampler(x, seed=seed) if noise_sampler is None else noise_sampler
     s_in = x.new_ones([x.shape[0]])
 
+    sigma_sqrt_cache = {}
+    def get_sigma_sqrt(sigma):
+        if sigma not in sigma_sqrt_cache:
+            sigma_sqrt_cache[sigma] = torch.sqrt(1.0 + sigma ** 2.0)
+        return sigma_sqrt_cache[sigma]
+
     for i in trange(len(sigmas) - 1, disable=disable):
-        denoised = model(x, sigmas[i] * s_in, **extra_args)
+        sigma_i = sigmas[i]
+        sigma_i_next = sigmas[i + 1]
+        sigma_i_sqrt = get_sigma_sqrt(sigma_i)
+        
+        denoised = model(x, sigma_i * s_in, **extra_args)
+        
         if callback is not None:
             callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigmas[i], 'denoised': denoised})
-        x = step_function(x / torch.sqrt(1.0 + sigmas[i] ** 2.0), sigmas[i], sigmas[i + 1], (x - denoised) / sigmas[i], noise_sampler)
-        if sigmas[i + 1] != 0:
-            x *= torch.sqrt(1.0 + sigmas[i + 1] ** 2.0)
+        
+        x = step_function(x / sigma_i_sqrt, sigma_i, sigma_i_next, (x - denoised) / sigma_i, noise_sampler)
+        
+        if sigma_i_next != 0:
+            x *= get_sigma_sqrt(sigma_i_next)
+
     return x
 
 
