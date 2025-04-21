@@ -1279,6 +1279,7 @@ def res_multistep(model, x, sigmas, extra_args=None, callback=None, disable=None
 
     old_denoised = None
     uncond_denoised = None
+
     def post_cfg_function(args):
         nonlocal uncond_denoised
         uncond_denoised = args["uncond_denoised"]
@@ -1288,22 +1289,19 @@ def res_multistep(model, x, sigmas, extra_args=None, callback=None, disable=None
         model_options = extra_args.get("model_options", {}).copy()
         extra_args["model_options"] = comfy.model_patcher.set_model_options_post_cfg_function(model_options, post_cfg_function, disable_cfg1_optimization=True)
 
-    for i in trange(len(sigmas) - 1, disable=disable):
+    range_iter = range(len(sigmas) - 1) if disable else trange(len(sigmas) - 1, disable=disable)
+
+    for i in range_iter:
         denoised = model(x, sigmas[i] * s_in, **extra_args)
         sigma_down, sigma_up = get_ancestral_step(sigmas[i], sigmas[i + 1], eta=eta)
         if callback is not None:
             callback({"x": x, "i": i, "sigma": sigmas[i], "sigma_hat": sigmas[i], "denoised": denoised})
+
         if sigma_down == 0 or old_denoised is None:
-            # Euler method
-            if cfg_pp:
-                d = to_d(x, sigmas[i], uncond_denoised)
-                x = denoised + d * sigma_down
-            else:
-                d = to_d(x, sigmas[i], denoised)
-                dt = sigma_down - sigmas[i]
-                x = x + d * dt
+            d = to_d(x, sigmas[i], uncond_denoised if cfg_pp else denoised)
+            dt = sigma_down - sigmas[i]
+            x.add_(d, alpha=dt if not cfg_pp else sigma_down)
         else:
-            # Second order multistep method in https://arxiv.org/pdf/2308.02157
             t, t_next, t_prev = t_fn(sigmas[i]), t_fn(sigma_down), t_fn(sigmas[i - 1])
             h = t_next - t
             c2 = (t_prev - t) / h
@@ -1313,19 +1311,19 @@ def res_multistep(model, x, sigmas, extra_args=None, callback=None, disable=None
             b2 = torch.nan_to_num(phi2_val / c2, nan=0.0)
 
             if cfg_pp:
-                x = x + (denoised - uncond_denoised)
-                x = sigma_fn(h) * x + h * (b1 * uncond_denoised + b2 * old_denoised)
+                x.add_(denoised).sub_(uncond_denoised)
+                x.mul_(sigma_fn(h)).add_(uncond_denoised, alpha=h * b1).add_(old_denoised, alpha=h * b2)
             else:
-                x = sigma_fn(h) * x + h * (b1 * denoised + b2 * old_denoised)
+                x.mul_(sigma_fn(h)).add_(denoised, alpha=h * b1).add_(old_denoised, alpha=h * b2)
 
-        # Noise addition
         if sigmas[i + 1] > 0:
-            x = x + noise_sampler(sigmas[i], sigmas[i + 1]) * s_noise * sigma_up
+            x.add_(noise_sampler(sigmas[i], sigmas[i + 1]), alpha=s_noise * sigma_up)
 
         if cfg_pp:
             old_denoised = uncond_denoised
         else:
             old_denoised = denoised
+
     return x
 
 @torch.no_grad()
