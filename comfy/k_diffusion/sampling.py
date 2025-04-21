@@ -696,6 +696,10 @@ def sample_dpmpp_sde(model, x, sigmas, extra_args=None, callback=None, disable=N
     sigma_fn = lambda t: t.neg().exp()
     t_fn = lambda sigma: sigma.log().neg()
 
+    # Precompute sigmas and timesteps
+    sigma_log_neg = sigmas.log().neg()
+    sigma_exp_neg = sigma_log_neg.exp()
+
     for i in trange(len(sigmas) - 1, disable=disable):
         denoised = model(x, sigmas[i] * s_in, **extra_args)
         if callback is not None:
@@ -704,27 +708,29 @@ def sample_dpmpp_sde(model, x, sigmas, extra_args=None, callback=None, disable=N
             # Euler method
             d = to_d(x, sigmas[i], denoised)
             dt = sigmas[i + 1] - sigmas[i]
-            x = x + d * dt
+            x.add_(d * dt)
         else:
             # DPM-Solver++
-            t, t_next = t_fn(sigmas[i]), t_fn(sigmas[i + 1])
+            t, t_next = sigma_log_neg[i], sigma_log_neg[i + 1]
             h = t_next - t
             s = t + h * r
             fac = 1 / (2 * r)
 
             # Step 1
-            sd, su = get_ancestral_step(sigma_fn(t), sigma_fn(s), eta)
-            s_ = t_fn(sd)
-            x_2 = (sigma_fn(s_) / sigma_fn(t)) * x - (t - s_).expm1() * denoised
-            x_2 = x_2 + noise_sampler(sigma_fn(t), sigma_fn(s)) * s_noise * su
-            denoised_2 = model(x_2, sigma_fn(s) * s_in, **extra_args)
+            sigma_t, sigma_s = sigma_exp_neg[i], s.exp()
+            sd, su = get_ancestral_step(sigma_t, sigma_s, eta)
+            s_ = sd.log().neg()
+            x_2 = (sd / sigma_t) * x - (t - s_).expm1() * denoised
+            x_2.add_(noise_sampler(sigma_t, sigma_s) * s_noise * su)
+            denoised_2 = model(x_2, sigma_s * s_in, **extra_args)
 
             # Step 2
-            sd, su = get_ancestral_step(sigma_fn(t), sigma_fn(t_next), eta)
-            t_next_ = t_fn(sd)
+            t_next_s_neg = sigma_exp_neg[i + 1]
+            sd, su = get_ancestral_step(sigma_t, t_next_s_neg, eta)
+            t_next_ = sd.log().neg()
             denoised_d = (1 - fac) * denoised + fac * denoised_2
-            x = (sigma_fn(t_next_) / sigma_fn(t)) * x - (t - t_next_).expm1() * denoised_d
-            x = x + noise_sampler(sigma_fn(t), sigma_fn(t_next)) * s_noise * su
+            x.mul_(sd / sigma_t).add_(- (t - t_next_).expm1() * denoised_d)
+            x.add_(noise_sampler(sigma_t, t_next_s_neg) * s_noise * su)
     return x
 
 
