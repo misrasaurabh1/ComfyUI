@@ -677,7 +677,7 @@ def encode_model_conds(model_function, conds, noise, device, prompt_type, **kwar
     noise_shape_2 = noise_shape[2] * 8
     default_width = noise_shape[3] * 8 if len(noise_shape) >= 4 else None
 
-    for x in conds:
+    for t, x in enumerate(conds):
         params = {
             "device": device,
             "noise": noise,
@@ -691,6 +691,7 @@ def encode_model_conds(model_function, conds, noise, device, prompt_type, **kwar
         model_conds = x['model_conds']
         model_conds.update(out)
         x['model_conds'] = model_conds
+        conds[idx] = x
 
     return conds
 
