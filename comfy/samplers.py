@@ -2,6 +2,9 @@ from __future__ import annotations
 from .k_diffusion import sampling as k_diffusion_sampling
 from .extra_samplers import uni_pc
 from typing import TYPE_CHECKING, Callable, NamedTuple
+import math
+import torch
+
 if TYPE_CHECKING:
     from comfy.model_patcher import ModelPatcher
     from comfy.model_base import BaseModel
@@ -432,15 +435,14 @@ def normal_scheduler(model_sampling, steps, sgm=False, floor=False):
             append_zero = False
         timesteps = torch.linspace(start, end, steps)
 
-    sigs = []
-    for x in range(len(timesteps)):
-        ts = timesteps[x]
-        sigs.append(float(s.sigma(ts)))
+    # Vectorized calculation of sigmas
+    sigmas = s.sigma(timesteps).cpu().numpy()
 
     if append_zero:
-        sigs += [0.0]
+        # Efficient way to append 0.0 to sigmas
+        sigmas = torch.cat((torch.tensor(sigmas), torch.tensor([0.0])))
 
-    return torch.FloatTensor(sigs)
+    return torch.FloatTensor(sigmas)
 
 # Implemented based on: https://arxiv.org/abs/2407.12173
 def beta_scheduler(model_sampling, steps, alpha=0.6, beta=0.6):
