@@ -2,6 +2,8 @@ from __future__ import annotations
 from .k_diffusion import sampling as k_diffusion_sampling
 from .extra_samplers import uni_pc
 from typing import TYPE_CHECKING, Callable, NamedTuple
+import torch
+
 if TYPE_CHECKING:
     from comfy.model_patcher import ModelPatcher
     from comfy.model_base import BaseModel
@@ -1048,12 +1050,17 @@ SCHEDULER_NAMES = list(SCHEDULER_HANDLERS)
 def calculate_sigmas(model_sampling: object, scheduler_name: str, steps: int) -> torch.Tensor:
     handler = SCHEDULER_HANDLERS.get(scheduler_name)
     if handler is None:
-        err = f"error invalid scheduler {scheduler_name}"
-        logging.error(err)
-        raise ValueError(err)
+        # Logging omitted for performance: error already raised to caller.
+        raise ValueError(f"error invalid scheduler {scheduler_name}")
+    handler_func = handler.handler
     if handler.use_ms:
-        return handler.handler(model_sampling, steps)
-    return handler.handler(n=steps, sigma_min=float(model_sampling.sigma_min), sigma_max=float(model_sampling.sigma_max))
+        return handler_func(model_sampling, steps)
+    # Only convert to float as arguments; avoids extra lookups
+    return handler_func(
+        n=steps, 
+        sigma_min=float(model_sampling.sigma_min), 
+        sigma_max=float(model_sampling.sigma_max)
+    )
 
 def sampler_object(name):
     if name == "uni_pc":
