@@ -113,10 +113,15 @@ def get_area_and_mult(conds, x_in, timestep_in):
 def cond_equal_size(c1, c2):
     if c1 is c2:
         return True
-    if c1.keys() != c2.keys():
+    if len(c1) != len(c2):
         return False
-    for k in c1:
-        if not c1[k].can_concat(c2[k]):
+    # Avoid building key sets; check keys and values in one pass
+    for k, v in c1.items():
+        try:
+            v2 = c2[k]
+        except KeyError:
+            return False
+        if not v.can_concat(v2):
             return False
     return True
 
