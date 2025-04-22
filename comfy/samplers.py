@@ -673,28 +673,46 @@ def apply_empty_x_to_equal_area(conds, uncond, name, uncond_fill_func):
             uncond[temp[1]] = n
 
 def encode_model_conds(model_function, conds, noise, device, prompt_type, **kwargs):
-    for t in range(len(conds)):
+    # Extract noise shape data once
+    noise_shape = noise.shape
+    len_noise_shape = len(noise_shape)
+    noise2 = noise_shape[2]
+    default_width = noise_shape[3] * 8 if len_noise_shape >= 4 else None
+    default_height = noise2 * 8
+
+    # Use local variable for conds length
+    n = len(conds)
+
+    # Get set of param keys once for kwargs fast lookup
+    kwargs_items = tuple(kwargs.items())
+
+    # Reuse dicts and minimize copying, only copy when required for output mutation
+    for t in range(n):
         x = conds[t]
-        params = x.copy()
+        params = x.copy()             # Must copy, as base params can be mutated below
         params["device"] = device
         params["noise"] = noise
-        default_width = None
-        if len(noise.shape) >= 4: #TODO: 8 multiple should be set by the model
-            default_width = noise.shape[3] * 8
-        params["width"] = params.get("width", default_width)
-        params["height"] = params.get("height", noise.shape[2] * 8)
-        params["prompt_type"] = params.get("prompt_type", prompt_type)
-        for k in kwargs:
+        # Only set "width/height/prompt_type" if missing
+        if "width" not in params:
+            params["width"] = default_width
+        if "height" not in params:
+            params["height"] = default_height
+        if "prompt_type" not in params:
+            params["prompt_type"] = prompt_type
+
+        # Fast kwargs propagation
+        for k, v in kwargs_items:
             if k not in params:
-                params[k] = kwargs[k]
+                params[k] = v
 
         out = model_function(**params)
+        # Only copy x and model_conds if necessary for mutation.
         x = x.copy()
         model_conds = x['model_conds'].copy()
-        for k in out:
-            model_conds[k] = out[k]
+        model_conds.update(out)    # faster than per-item loop
         x['model_conds'] = model_conds
-        conds[t] = x
+        conds[t] = x              # re-set in list
+
     return conds
 
 class Sampler:
