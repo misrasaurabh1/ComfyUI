@@ -2,6 +2,8 @@ from __future__ import annotations
 from .k_diffusion import sampling as k_diffusion_sampling
 from .extra_samplers import uni_pc
 from typing import TYPE_CHECKING, Callable, NamedTuple
+import torch
+
 if TYPE_CHECKING:
     from comfy.model_patcher import ModelPatcher
     from comfy.model_base import BaseModel
@@ -491,20 +493,24 @@ def get_mask_aabb(masks):
 
     b = masks.shape[0]
 
+    # Initialize the tensors
     bounding_boxes = torch.zeros((b, 4), device=masks.device, dtype=torch.int)
     is_empty = torch.zeros((b), device=masks.device, dtype=torch.bool)
+
+    # Compute bounding boxes
+    any_masks = masks.any(dim=(1,2)) # Check which masks are completely empty
+
     for i in range(b):
-        mask = masks[i]
-        if mask.numel() == 0:
-            continue
-        if torch.max(mask != 0) == False:
+        if any_masks[i]:
+            mask = masks[i]
+            y = mask.any(dim=1).nonzero().flatten() # Find rows with at least one non-zero entry
+            x = mask.any(dim=0).nonzero().flatten() # Find columns with at least one non-zero entry
+            bounding_boxes[i, 0] = x.min().item()
+            bounding_boxes[i, 1] = y.min().item()
+            bounding_boxes[i, 2] = x.max().item()
+            bounding_boxes[i, 3] = y.max().item()
+        else:
             is_empty[i] = True
-            continue
-        y, x = torch.where(mask)
-        bounding_boxes[i, 0] = torch.min(x)
-        bounding_boxes[i, 1] = torch.min(y)
-        bounding_boxes[i, 2] = torch.max(x)
-        bounding_boxes[i, 3] = torch.max(y)
 
     return bounding_boxes, is_empty
 
