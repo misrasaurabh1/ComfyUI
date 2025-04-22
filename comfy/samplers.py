@@ -2,6 +2,8 @@ from __future__ import annotations
 from .k_diffusion import sampling as k_diffusion_sampling
 from .extra_samplers import uni_pc
 from typing import TYPE_CHECKING, Callable, NamedTuple
+import math
+
 if TYPE_CHECKING:
     from comfy.model_patcher import ModelPatcher
     from comfy.model_base import BaseModel
@@ -704,7 +706,11 @@ class Sampler:
     def max_denoise(self, model_wrap, sigmas):
         max_sigma = float(model_wrap.inner_model.model_sampling.sigma_max)
         sigma = float(sigmas[0])
-        return math.isclose(max_sigma, sigma, rel_tol=1e-05) or sigma > max_sigma
+        
+        # Manually check if the values are close to avoid the overhead of the math.isclose function.
+        if sigma > max_sigma:
+            return True
+        return abs(max_sigma - sigma) <= 1e-05 * abs(max_sigma)
 
 KSAMPLER_NAMES = ["euler", "euler_cfg_pp", "euler_ancestral", "euler_ancestral_cfg_pp", "heun", "heunpp2","dpm_2", "dpm_2_ancestral",
                   "lms", "dpm_fast", "dpm_adaptive", "dpmpp_2s_ancestral", "dpmpp_2s_ancestral_cfg_pp", "dpmpp_sde", "dpmpp_sde_gpu",
