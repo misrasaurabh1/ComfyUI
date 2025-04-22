@@ -741,29 +741,21 @@ class KSAMPLER(Sampler):
 
 
 def ksampler(sampler_name, extra_options={}, inpaint_options={}):
-    if sampler_name == "dpm_fast":
-        def dpm_fast_function(model, noise, sigmas, extra_args, callback, disable):
-            if len(sigmas) <= 1:
-                return noise
+    # Avoid mutable argument issues, and avoid instantiation per call if not needed
+    if extra_options is None:
+        extra_options = {}
+    if inpaint_options is None:
+        inpaint_options = {}
 
-            sigma_min = sigmas[-1]
-            if sigma_min == 0:
-                sigma_min = sigmas[-2]
-            total_steps = len(sigmas) - 1
-            return k_diffusion_sampling.sample_dpm_fast(model, noise, sigma_min, sigmas[0], total_steps, extra_args=extra_args, callback=callback, disable=disable)
+    # Avoid defining functions on every call by using statically defined ones
+    if sampler_name == "dpm_fast":
         sampler_function = dpm_fast_function
     elif sampler_name == "dpm_adaptive":
-        def dpm_adaptive_function(model, noise, sigmas, extra_args, callback, disable, **extra_options):
-            if len(sigmas) <= 1:
-                return noise
-
-            sigma_min = sigmas[-1]
-            if sigma_min == 0:
-                sigma_min = sigmas[-2]
-            return k_diffusion_sampling.sample_dpm_adaptive(model, noise, sigma_min, sigmas[0], extra_args=extra_args, callback=callback, disable=disable, **extra_options)
         sampler_function = dpm_adaptive_function
     else:
-        sampler_function = getattr(k_diffusion_sampling, "sample_{}".format(sampler_name))
+        # Use f-string for faster formatting and getattr lookup only once
+        sampler_attr = f"sample_{sampler_name}"
+        sampler_function = getattr(k_diffusion_sampling, sampler_attr)
 
     return KSAMPLER(sampler_function, extra_options, inpaint_options)
 
@@ -1065,6 +1057,29 @@ def sampler_object(name):
     else:
         sampler = ksampler(name)
     return sampler
+
+
+# Helper functions moved outside to avoid redefinition on every ksampler call
+def dpm_fast_function(model, noise, sigmas, extra_args, callback, disable):
+    if len(sigmas) <= 1:
+        return noise
+
+    sigma_min = sigmas[-1] if sigmas[-1] != 0 else sigmas[-2]
+    total_steps = len(sigmas) - 1
+    return k_diffusion_sampling.sample_dpm_fast(
+        model, noise, sigma_min, sigmas[0], total_steps,
+        extra_args=extra_args, callback=callback, disable=disable
+    )
+
+def dpm_adaptive_function(model, noise, sigmas, extra_args, callback, disable, **extra_options):
+    if len(sigmas) <= 1:
+        return noise
+
+    sigma_min = sigmas[-1] if sigmas[-1] != 0 else sigmas[-2]
+    return k_diffusion_sampling.sample_dpm_adaptive(
+        model, noise, sigma_min, sigmas[0],
+        extra_args=extra_args, callback=callback, disable=disable, **extra_options
+    )
 
 class KSampler:
     SCHEDULERS = SCHEDULER_NAMES
