@@ -2,6 +2,8 @@ from __future__ import annotations
 from .k_diffusion import sampling as k_diffusion_sampling
 from .extra_samplers import uni_pc
 from typing import TYPE_CHECKING, Callable, NamedTuple
+import torch
+
 if TYPE_CHECKING:
     from comfy.model_patcher import ModelPatcher
     from comfy.model_base import BaseModel
@@ -394,12 +396,13 @@ class KSamplerX0Inpaint:
 
 def simple_scheduler(model_sampling, steps):
     s = model_sampling
-    sigs = []
-    ss = len(s.sigmas) / steps
-    for x in range(steps):
-        sigs += [float(s.sigmas[-(1 + int(x * ss))])]
-    sigs += [0.0]
-    return torch.FloatTensor(sigs)
+    sigmas = s.sigmas
+    L = len(sigmas)
+    ss = L / steps
+    # Efficiently precompute indices and collect results in a list comprehension
+    sigs = [float(sigmas[-(1 + int(x * ss))]) for x in range(steps)]
+    sigs.append(0.0)
+    return torch.tensor(sigs, dtype=torch.float32)
 
 def ddim_scheduler(model_sampling, steps):
     s = model_sampling
