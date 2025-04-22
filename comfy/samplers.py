@@ -2,6 +2,9 @@ from __future__ import annotations
 from .k_diffusion import sampling as k_diffusion_sampling
 from .extra_samplers import uni_pc
 from typing import TYPE_CHECKING, Callable, NamedTuple
+import math
+import torch
+
 if TYPE_CHECKING:
     from comfy.model_patcher import ModelPatcher
     from comfy.model_base import BaseModel
@@ -509,49 +512,35 @@ def get_mask_aabb(masks):
     return bounding_boxes, is_empty
 
 def resolve_areas_and_cond_masks_multidim(conditions, dims, device):
-    # We need to decide on an area outside the sampling loop in order to properly generate opposite areas of equal sizes.
-    # While we're doing this, we can also resolve the mask device and scaling for performance reasons
-    for i in range(len(conditions)):
-        c = conditions[i]
+    for i, c in enumerate(conditions):
         if 'area' in c:
             area = c['area']
             if area[0] == "percentage":
                 modified = c.copy()
                 a = area[1:]
                 a_len = len(a) // 2
-                area = ()
-                for d in range(len(dims)):
-                    area += (max(1, round(a[d] * dims[d])),)
-                for d in range(len(dims)):
-                    area += (round(a[d + a_len] * dims[d]),)
-
+                area = tuple(max(1, round(a[d] * dims[d])) for d in range(len(dims))) + \
+                       tuple(round(a[d + a_len] * dims[d]) for d in range(len(dims)))
                 modified['area'] = area
-                c = modified
-                conditions[i] = c
+                conditions[i] = modified
 
         if 'mask' in c:
-            mask = c['mask']
-            mask = mask.to(device=device)
+            mask = c['mask'].to(device=device)
             modified = c.copy()
-            if len(mask.shape) == len(dims):
-                mask = mask.unsqueeze(0)
+            mask = mask.unsqueeze(0) if len(mask.shape) == len(dims) else mask
             if mask.shape[1:] != dims:
-                mask = torch.nn.functional.interpolate(mask.unsqueeze(1), size=dims, mode='bilinear', align_corners=False).squeeze(1)
+                mask = torch.nn.functional.interpolate(
+                        mask.unsqueeze(1), size=dims, mode='bilinear', align_corners=False).squeeze(1)
 
-            if modified.get("set_area_to_bounds", False): #TODO: handle dim != 2
-                bounds = torch.max(torch.abs(mask),dim=0).values.unsqueeze(0)
+            if modified.get("set_area_to_bounds", False):
+                bounds = torch.max(torch.abs(mask), dim=0).values.unsqueeze(0)
                 boxes, is_empty = get_mask_aabb(bounds)
                 if is_empty[0]:
-                    # Use the minimum possible size for efficiency reasons. (Since the mask is all-0, this becomes a noop anyway)
                     modified['area'] = (8, 8, 0, 0)
                 else:
                     box = boxes[0]
-                    H, W, Y, X = (box[3] - box[1] + 1, box[2] - box[0] + 1, box[1], box[0])
-                    H = max(8, H)
-                    W = max(8, W)
-                    area = (int(H), int(W), int(Y), int(X))
-                    modified['area'] = area
-
+                    H, W, Y, X = max(8, box[3] - box[1] + 1), max(8, box[2] - box[0] + 1), box[1], box[0]
+                    modified['area'] = (int(H), int(W), int(Y), int(X))
             modified['mask'] = mask
             conditions[i] = modified
 
@@ -562,55 +551,42 @@ def resolve_areas_and_cond_masks(conditions, h, w, device):
 def create_cond_with_same_area_if_none(conds, c):
     if 'area' not in c:
         return
-
+    
     def area_inside(a, area_cmp):
-        a = add_area_dims(a, len(area_cmp) // 2)
-        area_cmp = add_area_dims(area_cmp, len(a) // 2)
+        a_extended = add_area_dims(a, len(area_cmp) // 2)
+        area_cmp_extended = add_area_dims(area_cmp, len(a) // 2)
 
-        a_l = len(a) // 2
-        area_cmp_l = len(area_cmp) // 2
+        a_l, area_cmp_l = len(a_extended) // 2, len(area_cmp_extended) // 2
         for i in range(min(a_l, area_cmp_l)):
-            if a[a_l + i] < area_cmp[area_cmp_l + i]:
+            if a_extended[a_l + i] < area_cmp_extended[area_cmp_l + i]:
                 return False
         for i in range(min(a_l, area_cmp_l)):
-            if (a[i] + a[a_l + i]) > (area_cmp[i] + area_cmp[area_cmp_l + i]):
+            if (a_extended[i] + a_extended[a_l + i]) > (area_cmp_extended[i] + area_cmp_extended[area_cmp_l + i]):
                 return False
         return True
 
-    c_area = c['area']
-    smallest = None
+    c_area, smallest = c['area'], None
     for x in conds:
         if 'area' in x:
             a = x['area']
             if area_inside(c_area, a):
-                if smallest is None:
+                if smallest is None or 'area' not in smallest or math.prod(smallest['area'][:len(smallest['area']) // 2]) > math.prod(a[:len(a) // 2]):
                     smallest = x
-                elif 'area' not in smallest:
-                    smallest = x
-                else:
-                    if math.prod(smallest['area'][:len(smallest['area']) // 2]) > math.prod(a[:len(a) // 2]):
-                        smallest = x
-        else:
-            if smallest is None:
-                smallest = x
-    if smallest is None:
+        elif smallest is None:
+            smallest = x
+    
+    if smallest is None or ('area' in smallest and smallest['area'] == c_area):
         return
-    if 'area' in smallest:
-        if smallest['area'] == c_area:
-            return
 
     out = c.copy()
-    out['model_conds'] = smallest['model_conds'].copy() #TODO: which fields should be copied?
-    conds += [out]
+    out['model_conds'] = smallest['model_conds'].copy()
+    conds.append(out)
 
 def calculate_start_end_timesteps(model, conds):
     s = model.model_sampling
-    for t in range(len(conds)):
-        x = conds[t]
+    for t, x in enumerate(conds):
+        timestep_start, timestep_end = None, None
 
-        timestep_start = None
-        timestep_end = None
-        # handle clip hook schedule, if needed
         if 'clip_start_percent' in x:
             timestep_start = s.percent_to_sigma(max(x['clip_start_percent'], x.get('start_percent', 0.0)))
             timestep_end = s.percent_to_sigma(min(x['clip_end_percent'], x.get('end_percent', 1.0)))
@@ -620,79 +596,59 @@ def calculate_start_end_timesteps(model, conds):
             if 'end_percent' in x:
                 timestep_end = s.percent_to_sigma(x['end_percent'])
 
-        if (timestep_start is not None) or (timestep_end is not None):
+        if timestep_start or timestep_end:
             n = x.copy()
-            if (timestep_start is not None):
+            if timestep_start:
                 n['timestep_start'] = timestep_start
-            if (timestep_end is not None):
+            if timestep_end:
                 n['timestep_end'] = timestep_end
             conds[t] = n
 
 def pre_run_control(model, conds):
     s = model.model_sampling
-    for t in range(len(conds)):
-        x = conds[t]
-
-        percent_to_timestep_function = lambda a: s.percent_to_sigma(a)
+    for x in conds:
         if 'control' in x:
-            x['control'].pre_run(model, percent_to_timestep_function)
+            x['control'].pre_run(model, s.percent_to_sigma)
 
 def apply_empty_x_to_equal_area(conds, uncond, name, uncond_fill_func):
-    cond_cnets = []
-    cond_other = []
-    uncond_cnets = []
-    uncond_other = []
-    for t in range(len(conds)):
-        x = conds[t]
-        if 'area' not in x:
-            if name in x and x[name] is not None:
-                cond_cnets.append(x[name])
-            else:
-                cond_other.append((x, t))
-    for t in range(len(uncond)):
-        x = uncond[t]
-        if 'area' not in x:
-            if name in x and x[name] is not None:
-                uncond_cnets.append(x[name])
-            else:
-                uncond_other.append((x, t))
+    cond_cnets, cond_other, uncond_cnets, uncond_other = [], [], [], []
 
-    if len(uncond_cnets) > 0:
-        return
-
-    for x in range(len(cond_cnets)):
-        temp = uncond_other[x % len(uncond_other)]
-        o = temp[0]
-        if name in o and o[name] is not None:
+    for x in conds:
+        if 'area' not in x:
+            (cond_cnets if name in x and x[name] is not None else cond_other).append(x)
+    
+    for t, x in enumerate(uncond):
+        if 'area' not in x:
+            (uncond_cnets if name in x and x[name] is not None else uncond_other).append((x, t))
+    
+    if not uncond_cnets:
+        for x in range(len(cond_cnets)):
+            temp = uncond_other[x % len(uncond_other)]
+            o = temp[0]
             n = o.copy()
             n[name] = uncond_fill_func(cond_cnets, x)
-            uncond += [n]
-        else:
-            n = o.copy()
-            n[name] = uncond_fill_func(cond_cnets, x)
-            uncond[temp[1]] = n
+            (uncond if name in o and o[name] is not None else uncond).append(n)
 
 def encode_model_conds(model_function, conds, noise, device, prompt_type, **kwargs):
-    for t in range(len(conds)):
-        x = conds[t]
-        params = x.copy()
-        params["device"] = device
-        params["noise"] = noise
-        default_width = None
-        if len(noise.shape) >= 4: #TODO: 8 multiple should be set by the model
-            default_width = noise.shape[3] * 8
-        params["width"] = params.get("width", default_width)
-        params["height"] = params.get("height", noise.shape[2] * 8)
-        params["prompt_type"] = params.get("prompt_type", prompt_type)
-        for k in kwargs:
-            if k not in params:
-                params[k] = kwargs[k]
+    default_width = None
+    if len(noise.shape) >= 4:
+        default_width = noise.shape[3] * 8
+        
+    for t, x in enumerate(conds):
+        params = {k: v for k, v in x.items()}
+        params.update({
+            "device": device,
+            "noise": noise,
+            "width": x.get("width", default_width),
+            "height": x.get("height", noise.shape[2] * 8),
+            "prompt_type": x.get("prompt_type", prompt_type)
+        })
+        params.update({k: v for k, v in kwargs.items() if k not in params})
 
         out = model_function(**params)
         x = x.copy()
         model_conds = x['model_conds'].copy()
-        for k in out:
-            model_conds[k] = out[k]
+        model_conds.update(out)
         x['model_conds'] = model_conds
         conds[t] = x
     return conds
@@ -769,9 +725,10 @@ def ksampler(sampler_name, extra_options={}, inpaint_options={}):
 
 
 def process_conds(model, noise, conds, device, latent_image=None, denoise_mask=None, seed=None):
+    noise_shape = noise.shape[2:]
     for k in conds:
         conds[k] = conds[k][:]
-        resolve_areas_and_cond_masks_multidim(conds[k], noise.shape[2:], device)
+        resolve_areas_and_cond_masks_multidim(conds[k], noise_shape, device)
 
     for k in conds:
         calculate_start_end_timesteps(model, conds[k])
@@ -780,7 +737,6 @@ def process_conds(model, noise, conds, device, latent_image=None, denoise_mask=N
         for k in conds:
             conds[k] = encode_model_conds(model.extra_conds, conds[k], noise, device, k, latent_image=latent_image, denoise_mask=denoise_mask, seed=seed)
 
-    #make sure each cond area has an opposite one with the same area
     for k in conds:
         for c in conds[k]:
             for kk in conds:
@@ -800,8 +756,14 @@ def process_conds(model, noise, conds, device, latent_image=None, denoise_mask=N
         positive = conds["positive"]
         for k in conds:
             if k != "positive":
-                apply_empty_x_to_equal_area(list(filter(lambda c: c.get('control_apply_to_uncond', False) == True, positive)), conds[k], 'control', lambda cond_cnets, x: cond_cnets[x])
-                apply_empty_x_to_equal_area(positive, conds[k], 'gligen', lambda cond_cnets, x: cond_cnets[x])
+                apply_empty_x_to_equal_area(
+                    list(filter(lambda c: c.get('control_apply_to_uncond', False), positive)), 
+                    conds[k], 'control', lambda cond_cnets, x: cond_cnets[x]
+                )
+                apply_empty_x_to_equal_area(
+                    positive, 
+                    conds[k], 'gligen', lambda cond_cnets, x: cond_cnets[x]
+                )
 
     return conds
 
