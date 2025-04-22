@@ -2,6 +2,9 @@ from __future__ import annotations
 from .k_diffusion import sampling as k_diffusion_sampling
 from .extra_samplers import uni_pc
 from typing import TYPE_CHECKING, Callable, NamedTuple
+import math
+import torch
+
 if TYPE_CHECKING:
     from comfy.model_patcher import ModelPatcher
     from comfy.model_base import BaseModel
@@ -427,20 +430,30 @@ def normal_scheduler(model_sampling, steps, sgm=False, floor=False):
     if sgm:
         timesteps = torch.linspace(start, end, steps + 1)[:-1]
     else:
-        if math.isclose(float(s.sigma(end)), 0, abs_tol=0.00001):
+        # only expand steps and disable append_zero if sigma(end) is very close to zero
+        if math.isclose(float(s.sigma(end)), 0, abs_tol=1e-5):
             steps += 1
             append_zero = False
         timesteps = torch.linspace(start, end, steps)
 
-    sigs = []
-    for x in range(len(timesteps)):
-        ts = timesteps[x]
-        sigs.append(float(s.sigma(ts)))
+    # Vectorized call to s.sigma if possible, otherwise use list comprehension as fallback
+    if hasattr(s, "sigma") and callable(getattr(s, "sigma", None)):
+        # Check if s.sigma can handle tensor input or try to vectorize with map
+        try:
+            sigs = s.sigma(timesteps)
+            # Ensure returned type is torch.Tensor, otherwise fallback
+            if not isinstance(sigs, torch.Tensor):
+                sigs = torch.tensor([float(s.sigma(ts)) for ts in timesteps], dtype=torch.float32)
+        except Exception:
+            # Fallback: Use list comprehension if s.sigma cannot vectorize
+            sigs = torch.tensor([float(s.sigma(ts)) for ts in timesteps], dtype=torch.float32)
+    else:
+        sigs = torch.tensor([float(s.sigma(ts)) for ts in timesteps], dtype=torch.float32)
 
     if append_zero:
-        sigs += [0.0]
+        sigs = torch.cat([sigs, torch.zeros(1, dtype=sigs.dtype, device=sigs.device)])
 
-    return torch.FloatTensor(sigs)
+    return sigs
 
 # Implemented based on: https://arxiv.org/abs/2407.12173
 def beta_scheduler(model_sampling, steps, alpha=0.6, beta=0.6):
