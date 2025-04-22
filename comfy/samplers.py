@@ -638,39 +638,37 @@ def pre_run_control(model, conds):
             x['control'].pre_run(model, percent_to_timestep_function)
 
 def apply_empty_x_to_equal_area(conds, uncond, name, uncond_fill_func):
+    # Partition into "cond_cnets" and "cond_other", and "uncond_cnets" and "uncond_other" 
     cond_cnets = []
     cond_other = []
-    uncond_cnets = []
-    uncond_other = []
-    for t in range(len(conds)):
-        x = conds[t]
+    for t, x in enumerate(conds):
         if 'area' not in x:
-            if name in x and x[name] is not None:
-                cond_cnets.append(x[name])
+            val = x.get(name)
+            if val is not None:
+                cond_cnets.append(val)
             else:
                 cond_other.append((x, t))
-    for t in range(len(uncond)):
-        x = uncond[t]
+
+    uncond_cnets = []
+    uncond_other = []
+    for t, x in enumerate(uncond):
         if 'area' not in x:
-            if name in x and x[name] is not None:
-                uncond_cnets.append(x[name])
+            val = x.get(name)
+            if val is not None:
+                uncond_cnets.append(val)
             else:
                 uncond_other.append((x, t))
 
-    if len(uncond_cnets) > 0:
+    if uncond_cnets:
         return
 
+    # Avoid repeated len() in loop
+    uncond_other_len = len(uncond_other)
     for x in range(len(cond_cnets)):
-        temp = uncond_other[x % len(uncond_other)]
-        o = temp[0]
-        if name in o and o[name] is not None:
-            n = o.copy()
-            n[name] = uncond_fill_func(cond_cnets, x)
-            uncond += [n]
-        else:
-            n = o.copy()
-            n[name] = uncond_fill_func(cond_cnets, x)
-            uncond[temp[1]] = n
+        temp_x, temp_t = uncond_other[x % uncond_other_len]
+        n = temp_x.copy()
+        n[name] = uncond_fill_func(cond_cnets, x)
+        uncond[temp_t] = n  # Always write back (matches original final logic)
 
 def encode_model_conds(model_function, conds, noise, device, prompt_type, **kwargs):
     for t in range(len(conds)):
