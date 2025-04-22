@@ -2,6 +2,9 @@ from __future__ import annotations
 from .k_diffusion import sampling as k_diffusion_sampling
 from .extra_samplers import uni_pc
 from typing import TYPE_CHECKING, Callable, NamedTuple
+import math
+import torch
+
 if TYPE_CHECKING:
     from comfy.model_patcher import ModelPatcher
     from comfy.model_base import BaseModel
@@ -702,8 +705,8 @@ class Sampler:
         pass
 
     def max_denoise(self, model_wrap, sigmas):
-        max_sigma = float(model_wrap.inner_model.model_sampling.sigma_max)
-        sigma = float(sigmas[0])
+        max_sigma = model_wrap.inner_model.model_sampling.sigma_max
+        sigma = sigmas[0]
         return math.isclose(max_sigma, sigma, rel_tol=1e-05) or sigma > max_sigma
 
 KSAMPLER_NAMES = ["euler", "euler_cfg_pp", "euler_ancestral", "euler_ancestral_cfg_pp", "heun", "heunpp2","dpm_2", "dpm_2_ancestral",
@@ -722,9 +725,11 @@ class KSAMPLER(Sampler):
         extra_args["denoise_mask"] = denoise_mask
         model_k = KSamplerX0Inpaint(model_wrap, sigmas)
         model_k.latent_image = latent_image
+
         if self.inpaint_options.get("random", False): #TODO: Should this be the default?
-            generator = torch.manual_seed(extra_args.get("seed", 41) + 1)
-            model_k.noise = torch.randn(noise.shape, generator=generator, device="cpu").to(noise.dtype).to(noise.device)
+            seed = extra_args.get("seed", 41) + 1
+            generator = torch.Generator(device=noise.device).manual_seed(seed)
+            model_k.noise = torch.randn(noise.shape, generator=generator, device=noise.device, dtype=noise.dtype)
         else:
             model_k.noise = noise
 
