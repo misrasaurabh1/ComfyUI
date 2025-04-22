@@ -344,17 +344,45 @@ def calc_cond_uncond_batch(model, cond, uncond, x_in, timestep, model_options): 
     return tuple(calc_cond_batch(model, [cond, uncond], x_in, timestep, model_options))
 
 def cfg_function(model, cond_pred, uncond_pred, cond_scale, x, timestep, model_options={}, cond=None, uncond=None):
-    if "sampler_cfg_function" in model_options:
-        args = {"cond": x - cond_pred, "uncond": x - uncond_pred, "cond_scale": cond_scale, "timestep": timestep, "input": x, "sigma": timestep,
-                "cond_denoised": cond_pred, "uncond_denoised": uncond_pred, "model": model, "model_options": model_options}
-        cfg_result = x - model_options["sampler_cfg_function"](args)
+    # Directly retrieve 'sampler_cfg_function' and 'sampler_post_cfg_function' once to avoid repeated lookups
+    sampler_cfg_function = model_options.get("sampler_cfg_function")
+    
+    if sampler_cfg_function is not None:
+        args = {
+            "cond": x - cond_pred,
+            "uncond": x - uncond_pred,
+            "cond_scale": cond_scale,
+            "timestep": timestep,
+            "input": x,
+            "sigma": timestep,
+            "cond_denoised": cond_pred,
+            "uncond_denoised": uncond_pred,
+            "model": model,
+            "model_options": model_options
+        }
+        cfg_result = x - sampler_cfg_function(args)
     else:
         cfg_result = uncond_pred + (cond_pred - uncond_pred) * cond_scale
 
-    for fn in model_options.get("sampler_post_cfg_function", []):
-        args = {"denoised": cfg_result, "cond": cond, "uncond": uncond, "cond_scale": cond_scale, "model": model, "uncond_denoised": uncond_pred, "cond_denoised": cond_pred,
-                "sigma": timestep, "model_options": model_options, "input": x}
-        cfg_result = fn(args)
+    # Retrieve the sampler_post_cfg_function list at once
+    sampler_post_cfg_functions = model_options.get("sampler_post_cfg_function", [])
+    
+    if sampler_post_cfg_functions:
+        args = {
+            "denoised": cfg_result,
+            "cond": cond,
+            "uncond": uncond,
+            "cond_scale": cond_scale,
+            "model": model,
+            "uncond_denoised": uncond_pred,
+            "cond_denoised": cond_pred,
+            "sigma": timestep,
+            "model_options": model_options,
+            "input": x
+        }
+        # Iterate through each function only once to apply post configuration
+        for fn in sampler_post_cfg_functions:
+            cfg_result = fn(args)
 
     return cfg_result
 
