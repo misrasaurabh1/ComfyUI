@@ -2,6 +2,9 @@ from __future__ import annotations
 from .k_diffusion import sampling as k_diffusion_sampling
 from .extra_samplers import uni_pc
 from typing import TYPE_CHECKING, Callable, NamedTuple
+import torch
+import numpy as np
+
 if TYPE_CHECKING:
     from comfy.model_patcher import ModelPatcher
     from comfy.model_base import BaseModel
@@ -460,23 +463,26 @@ def beta_scheduler(model_sampling, steps, alpha=0.6, beta=0.6):
 # from: https://github.com/genmoai/models/blob/main/src/mochi_preview/infer.py#L41
 def linear_quadratic_schedule(model_sampling, steps, threshold_noise=0.025, linear_steps=None):
     if steps == 1:
-        sigma_schedule = [1.0, 0.0]
+        sigma_schedule = np.array([1.0, 0.0])
     else:
         if linear_steps is None:
             linear_steps = steps // 2
-        linear_sigma_schedule = [i * threshold_noise / linear_steps for i in range(linear_steps)]
+        
+        linear_sigma_schedule = np.linspace(0, threshold_noise, linear_steps, endpoint=False)
+        
         threshold_noise_step_diff = linear_steps - threshold_noise * steps
         quadratic_steps = steps - linear_steps
         quadratic_coef = threshold_noise_step_diff / (linear_steps * quadratic_steps ** 2)
         linear_coef = threshold_noise / linear_steps - 2 * threshold_noise_step_diff / (quadratic_steps ** 2)
         const = quadratic_coef * (linear_steps ** 2)
-        quadratic_sigma_schedule = [
-            quadratic_coef * (i ** 2) + linear_coef * i + const
-            for i in range(linear_steps, steps)
-        ]
-        sigma_schedule = linear_sigma_schedule + quadratic_sigma_schedule + [1.0]
-        sigma_schedule = [1.0 - x for x in sigma_schedule]
-    return torch.FloatTensor(sigma_schedule) * model_sampling.sigma_max.cpu()
+        
+        quadratic_indices = np.arange(linear_steps, steps)
+        quadratic_sigma_schedule = quadratic_coef * (quadratic_indices ** 2) + linear_coef * quadratic_indices + const
+        
+        sigma_schedule = np.concatenate((linear_sigma_schedule, quadratic_sigma_schedule, [1.0]))
+        sigma_schedule = 1.0 - sigma_schedule
+    
+    return torch.from_numpy(sigma_schedule).float() * model_sampling.sigma_max.cpu()
 
 # Referenced from https://github.com/AUTOMATIC1111/stable-diffusion-webui/pull/15608
 def kl_optimal_scheduler(n: int, sigma_min: float, sigma_max: float) -> torch.Tensor:
