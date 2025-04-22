@@ -344,18 +344,50 @@ def calc_cond_uncond_batch(model, cond, uncond, x_in, timestep, model_options): 
     return tuple(calc_cond_batch(model, [cond, uncond], x_in, timestep, model_options))
 
 def cfg_function(model, cond_pred, uncond_pred, cond_scale, x, timestep, model_options={}, cond=None, uncond=None):
+    # Minor local var aliasing to avoid global lookups (minor, but in hot code best practice).
+    post_cfg_fns = model_options.get("sampler_post_cfg_function", None)
+    # Avoid duplicate dict creation by setting up shared arg dict for post-processing:
+    # All keys except 'denoised' remain the same within the loop.
+
+    # Compute cfg_result, only once
     if "sampler_cfg_function" in model_options:
-        args = {"cond": x - cond_pred, "uncond": x - uncond_pred, "cond_scale": cond_scale, "timestep": timestep, "input": x, "sigma": timestep,
-                "cond_denoised": cond_pred, "uncond_denoised": uncond_pred, "model": model, "model_options": model_options}
-        cfg_result = x - model_options["sampler_cfg_function"](args)
+        sampler_cfg_fn = model_options["sampler_cfg_function"]
+        args = {
+            "cond": x - cond_pred,
+            "uncond": x - uncond_pred,
+            "cond_scale": cond_scale,
+            "timestep": timestep,
+            "input": x,
+            "sigma": timestep,
+            "cond_denoised": cond_pred,
+            "uncond_denoised": uncond_pred,
+            "model": model,
+            "model_options": model_options,
+        }
+        cfg_result = x - sampler_cfg_fn(args)
     else:
         cfg_result = uncond_pred + (cond_pred - uncond_pred) * cond_scale
 
-    for fn in model_options.get("sampler_post_cfg_function", []):
-        args = {"denoised": cfg_result, "cond": cond, "uncond": uncond, "cond_scale": cond_scale, "model": model, "uncond_denoised": uncond_pred, "cond_denoised": cond_pred,
-                "sigma": timestep, "model_options": model_options, "input": x}
-        cfg_result = fn(args)
-
+    # Only allocate args dict if necessary
+    if post_cfg_fns:
+        # Set up the static portion of the args dict once
+        static_args = {
+            "cond": cond,
+            "uncond": uncond,
+            "cond_scale": cond_scale,
+            "model": model,
+            "uncond_denoised": uncond_pred,
+            "cond_denoised": cond_pred,
+            "sigma": timestep,
+            "model_options": model_options,
+            "input": x,
+        }
+        for fn in post_cfg_fns:
+            # For each fn, just update the 'denoised' value since that's the only thing changing
+            static_args["denoised"] = cfg_result
+            cfg_result = fn(static_args)
+        # As static_args is reused, no new dict per call (much faster).
+        
     return cfg_result
 
 #The main sampling function shared by all the samplers
