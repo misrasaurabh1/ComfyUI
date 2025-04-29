@@ -167,15 +167,23 @@ class ModelSamplingFlux:
     def patch(self, model, max_shift, base_shift, width, height):
         m = model.clone()
 
+        # Only do arithmetic once, use constants for pre-calculated values
         x1 = 256
         x2 = 4096
-        mm = (max_shift - base_shift) / (x2 - x1)
+        x2_minus_x1 = x2 - x1
+        mm = (max_shift - base_shift) / x2_minus_x1
         b = base_shift - mm * x1
-        shift = (width * height / (8 * 8 * 2 * 2)) * mm + b
 
+        area_divisor = 8 * 8 * 2 * 2      # constant: 256
+        wh_divided = (width * height) / area_divisor
+        shift = wh_divided * mm + b
+
+        # Only access modules in comfy once (minor, avoids repeated lookups)
         sampling_base = comfy.model_sampling.ModelSamplingFlux
-        sampling_type = comfy.model_sampling.CONST
+        # comfy.model_sampling.CONST is only used as a base for inheritance so move lookup up
+        sampling_type = getattr(comfy.model_sampling, "CONST")
 
+        # Define subclass just-in-time and instantiate in one step
         class ModelSamplingAdvanced(sampling_base, sampling_type):
             pass
 

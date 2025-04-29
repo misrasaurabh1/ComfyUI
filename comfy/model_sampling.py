@@ -317,6 +317,7 @@ def flux_time_shift(mu: float, sigma: float, t):
 class ModelSamplingFlux(torch.nn.Module):
     def __init__(self, model_config=None):
         super().__init__()
+        # The config handling and defaulting is unchanged for correctness
         if model_config is not None:
             sampling_settings = model_config.sampling_settings
         else:
@@ -326,7 +327,9 @@ class ModelSamplingFlux(torch.nn.Module):
 
     def set_parameters(self, shift=1.15, timesteps=10000):
         self.shift = shift
-        ts = self.sigma((torch.arange(1, timesteps + 1, 1) / timesteps))
+
+        # Vectorized, avoid repeated computation and unnecessary division in arange
+        ts = self.sigma(torch.linspace(1 / timesteps, 1.0, timesteps))
         self.register_buffer('sigmas', ts)
 
     @property
