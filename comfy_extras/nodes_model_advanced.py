@@ -25,19 +25,20 @@ class ModelSamplingDiscreteDistilled(comfy.model_sampling.ModelSamplingDiscrete)
 
     def __init__(self, model_config=None, zsnr=None):
         super().__init__(model_config, zsnr=zsnr)
-
         self.skip_steps = self.num_timesteps // self.original_timesteps
 
-        sigmas_valid = torch.zeros((self.original_timesteps), dtype=torch.float32)
-        for x in range(self.original_timesteps):
-            sigmas_valid[self.original_timesteps - 1 - x] = self.sigmas[self.num_timesteps - 1 - x * self.skip_steps]
-
+        # Vectorized version: select indices using torch.arange and direct indexing
+        idx = torch.arange(self.original_timesteps - 1, -1, -1)
+        sig_idx = self.num_timesteps - 1 - idx * self.skip_steps
+        sigmas_valid = self.sigmas[sig_idx]
         self.set_sigmas(sigmas_valid)
 
     def timestep(self, sigma):
         log_sigma = sigma.log()
         dists = log_sigma.to(self.log_sigmas.device) - self.log_sigmas[:, None]
-        return (dists.abs().argmin(dim=0).view(sigma.shape) * self.skip_steps + (self.skip_steps - 1)).to(sigma.device)
+        # argmin gives (N,), skip explicit .view(sigma.shape)
+        res = dists.abs().argmin(dim=0) * self.skip_steps + (self.skip_steps - 1)
+        return res.to(sigma.device)
 
     def sigma(self, timestep):
         t = torch.clamp(((timestep.float().to(self.log_sigmas.device) - (self.skip_steps - 1)) / self.skip_steps).float(), min=0, max=(len(self.sigmas) - 1))
