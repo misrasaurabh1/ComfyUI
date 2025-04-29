@@ -62,26 +62,28 @@ class ModelSamplingDiscrete:
     CATEGORY = "advanced/model"
 
     def patch(self, model, sampling, zsnr):
-        m = model.clone()
-
-        sampling_base = comfy.model_sampling.ModelSamplingDiscrete
-        if sampling == "eps":
-            sampling_type = comfy.model_sampling.EPS
-        elif sampling == "v_prediction":
-            sampling_type = comfy.model_sampling.V_PREDICTION
-        elif sampling == "lcm":
-            sampling_type = LCM
+        # Fast lookup for sampling_base, sampling_type
+        sampling_map = {
+            "eps":   (comfy.model_sampling.ModelSamplingDiscrete, comfy.model_sampling.EPS),
+            "v_prediction": (comfy.model_sampling.ModelSamplingDiscrete, comfy.model_sampling.V_PREDICTION),
+            "x0":    (comfy.model_sampling.ModelSamplingDiscrete, comfy.model_sampling.X0),
+            "img_to_img": (comfy.model_sampling.ModelSamplingDiscrete, comfy.model_sampling.IMG_TO_IMG),
+        }
+        
+        if sampling == "lcm":
+            # fallback to former path if required by context
             sampling_base = ModelSamplingDiscreteDistilled
-        elif sampling == "x0":
-            sampling_type = comfy.model_sampling.X0
-        elif sampling == "img_to_img":
-            sampling_type = comfy.model_sampling.IMG_TO_IMG
+            sampling_type = LCM
+        else:
+            sampling_base, sampling_type = sampling_map[sampling]
+            
+        # Only clone once needed
+        m = model.clone()
 
         class ModelSamplingAdvanced(sampling_base, sampling_type):
             pass
 
         model_sampling = ModelSamplingAdvanced(model.model.model_config, zsnr=zsnr)
-
         m.add_object_patch("model_sampling", model_sampling)
         return (m, )
 
