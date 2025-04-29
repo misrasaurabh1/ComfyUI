@@ -37,11 +37,14 @@ class T5XXLTokenizer(sd1_clip.SDTokenizer):
 
 
 class SD3Tokenizer:
+
     def __init__(self, embedding_directory=None, tokenizer_data={}):
+        # Cache get method for faster access if tokenizer_data is reused  
         clip_l_tokenizer_class = tokenizer_data.get("clip_l_tokenizer_class", sd1_clip.SDTokenizer)
-        self.clip_l = clip_l_tokenizer_class(embedding_directory=embedding_directory)
-        self.clip_g = sdxl_clip.SDXLClipGTokenizer(embedding_directory=embedding_directory)
-        self.t5xxl = T5XXLTokenizer(embedding_directory=embedding_directory)
+        embedding_directory_local = embedding_directory  # local var access is slightly faster
+        self.clip_l = clip_l_tokenizer_class(embedding_directory=embedding_directory_local)
+        self.clip_g = sdxl_clip.SDXLClipGTokenizer(embedding_directory=embedding_directory_local)
+        self.t5xxl = T5XXLTokenizer(embedding_directory=embedding_directory_local)
 
     def tokenize_with_weights(self, text:str, return_word_ids=False, **kwargs):
         out = {}
