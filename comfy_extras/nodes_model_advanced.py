@@ -25,13 +25,12 @@ class ModelSamplingDiscreteDistilled(comfy.model_sampling.ModelSamplingDiscrete)
 
     def __init__(self, model_config=None, zsnr=None):
         super().__init__(model_config, zsnr=zsnr)
-
         self.skip_steps = self.num_timesteps // self.original_timesteps
 
-        sigmas_valid = torch.zeros((self.original_timesteps), dtype=torch.float32)
-        for x in range(self.original_timesteps):
-            sigmas_valid[self.original_timesteps - 1 - x] = self.sigmas[self.num_timesteps - 1 - x * self.skip_steps]
-
+        idxs = torch.arange(self.original_timesteps-1, -1, -1, device=self.sigmas.device)
+        sigmas_idx = self.num_timesteps - 1 - idxs * self.skip_steps
+        # Gather the sigmas in one vectorized operation
+        sigmas_valid = self.sigmas[sigmas_idx.to(torch.long)]
         self.set_sigmas(sigmas_valid)
 
     def timestep(self, sigma):
@@ -40,11 +39,15 @@ class ModelSamplingDiscreteDistilled(comfy.model_sampling.ModelSamplingDiscrete)
         return (dists.abs().argmin(dim=0).view(sigma.shape) * self.skip_steps + (self.skip_steps - 1)).to(sigma.device)
 
     def sigma(self, timestep):
-        t = torch.clamp(((timestep.float().to(self.log_sigmas.device) - (self.skip_steps - 1)) / self.skip_steps).float(), min=0, max=(len(self.sigmas) - 1))
+        # Ensure only one float().to(device) operation is used
+        t = ((timestep.to(self.log_sigmas.device, dtype=torch.float32) - (self.skip_steps - 1)) / self.skip_steps)
+        t = torch.clamp(t, min=0, max=(self.log_sigmas.size(0) - 1))  # use self.log_sigmas.size for better robustness
+
         low_idx = t.floor().long()
         high_idx = t.ceil().long()
-        w = t.frac()
-        log_sigma = (1 - w) * self.log_sigmas[low_idx] + w * self.log_sigmas[high_idx]
+        w = t - low_idx  # Avoid .frac() and let this be fast due to integer low_idx
+        # Use torch.lerp for linear interpolation
+        log_sigma = torch.lerp(self.log_sigmas[low_idx], self.log_sigmas[high_idx], w)
         return log_sigma.exp().to(timestep.device)
 
 
