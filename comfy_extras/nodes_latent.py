@@ -65,11 +65,8 @@ class LatentMultiply:
     CATEGORY = "latent/advanced"
 
     def op(self, samples, multiplier):
-        samples_out = samples.copy()
-
-        s1 = samples["samples"]
-        samples_out["samples"] = s1 * multiplier
-        return (samples_out,)
+        # Use fast dict unpacking and numpy broadcasting; avoids slow .copy()
+        return ({**samples, "samples": samples["samples"] * multiplier},)
 
 class LatentInterpolate:
     @classmethod
