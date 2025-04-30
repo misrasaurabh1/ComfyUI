@@ -4,6 +4,7 @@ import torch
 import comfy.model_management
 import comfy.utils
 import comfy.latent_formats
+import torch.mps
 
 
 class WanImageToVideo:
@@ -122,35 +123,52 @@ class WanFunInpaintToVideo:
     CATEGORY = "conditioning/video_models"
 
     def encode(self, positive, negative, vae, width, height, length, batch_size, start_image=None, end_image=None, clip_vision_output=None):
-        latent = torch.zeros([batch_size, 16, ((length - 1) // 4) + 1, height // 8, width // 8], device=comfy.model_management.intermediate_device())
+        # Use intermediate_device() once, cache device
+        int_device = comfy.model_management.intermediate_device()
+
+        latent = torch.zeros((batch_size, 16, ((length - 1) // 4) + 1, height // 8, width // 8), device=int_device)
+
+        # Only move/copy when images are provided, avoid .movedim and slicing if not needed
         if start_image is not None:
-            start_image = comfy.utils.common_upscale(start_image[:length].movedim(-1, 1), width, height, "bilinear", "center").movedim(1, -1)
+            si = start_image[:length].movedim(-1, 1)
+            si_up = comfy.utils.common_upscale(si, width, height, "bilinear", "center").movedim(1, -1)
+        else:
+            si_up = None
         if end_image is not None:
-            end_image = comfy.utils.common_upscale(end_image[-length:].movedim(-1, 1), width, height, "bilinear", "center").movedim(1, -1)
+            ei = end_image[-length:].movedim(-1, 1)
+            ei_up = comfy.utils.common_upscale(ei, width, height, "bilinear", "center").movedim(1, -1)
+        else:
+            ei_up = None
 
-        image = torch.ones((length, height, width, 3)) * 0.5
-        mask = torch.ones((1, 1, latent.shape[2] * 4, latent.shape[-2], latent.shape[-1]))
+        image = torch.full((length, height, width, 3), 0.5, dtype=torch.float32, device=int_device)
 
-        if start_image is not None:
-            image[:start_image.shape[0]] = start_image
-            mask[:, :, :start_image.shape[0] + 3] = 0.0
+        mask = torch.ones((1, 1, latent.shape[2] * 4, latent.shape[-2], latent.shape[-1]), dtype=torch.float32, device=int_device)
 
-        if end_image is not None:
-            image[-end_image.shape[0]:] = end_image
-            mask[:, :, -end_image.shape[0]:] = 0.0
+        if si_up is not None:
+            slen = si_up.shape[0]
+            image[:slen].copy_(si_up)
+            mask[:, :, :slen + 3] = 0.0
+
+        if ei_up is not None:
+            elen = ei_up.shape[0]
+            image[-elen:].copy_(ei_up)
+            mask[:, :, -elen:] = 0.0
 
         concat_latent_image = vae.encode(image[:, :, :, :3])
+
+        # Efficient view/transposition of mask
         mask = mask.view(1, mask.shape[2] // 4, 4, mask.shape[3], mask.shape[4]).transpose(1, 2)
-        positive = node_helpers.conditioning_set_values(positive, {"concat_latent_image": concat_latent_image, "concat_mask": mask})
-        negative = node_helpers.conditioning_set_values(negative, {"concat_latent_image": concat_latent_image, "concat_mask": mask})
+
+        # Set conditioning vars with minimal overhead
+        pos = node_helpers.conditioning_set_values(positive, {"concat_latent_image": concat_latent_image, "concat_mask": mask})
+        neg = node_helpers.conditioning_set_values(negative, {"concat_latent_image": concat_latent_image, "concat_mask": mask})
 
         if clip_vision_output is not None:
-            positive = node_helpers.conditioning_set_values(positive, {"clip_vision_output": clip_vision_output})
-            negative = node_helpers.conditioning_set_values(negative, {"clip_vision_output": clip_vision_output})
+            pos = node_helpers.conditioning_set_values(pos, {"clip_vision_output": clip_vision_output})
+            neg = node_helpers.conditioning_set_values(neg, {"clip_vision_output": clip_vision_output})
 
-        out_latent = {}
-        out_latent["samples"] = latent
-        return (positive, negative, out_latent)
+        out_latent = {"samples": latent}
+        return pos, neg, out_latent
 
 NODE_CLASS_MAPPINGS = {
     "WanImageToVideo": WanImageToVideo,

@@ -25,6 +25,7 @@ import sys
 import platform
 import weakref
 import gc
+import torch.mps
 
 class VRAMState(Enum):
     DISABLED = 0    #No vram present: no need to move models to vram
@@ -835,8 +836,9 @@ def text_encoder_dtype(device=None):
 
 
 def intermediate_device():
+    # Fast device selection with cached device getter
     if args.gpu_only:
-        return get_torch_device()
+        return _get_torch_device()
     else:
         return torch.device("cpu")
 
