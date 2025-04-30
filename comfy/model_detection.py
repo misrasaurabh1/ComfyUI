@@ -7,15 +7,21 @@ import logging
 import torch
 
 def count_blocks(state_dict_keys, prefix_string):
+    # Precompute all possible formatted prefix variants for fast lookup
+    prefix_base = prefix_string.rstrip('{}')
+    prefixes = set()
+    for k in state_dict_keys:
+        if k.startswith(prefix_base):
+            # Extract the block number between the prefix_base and the next '.'
+            rest = k[len(prefix_base):]
+            i = rest.find('.')
+            if i != -1:
+                num_str = rest[:i]
+                if num_str.isdigit():
+                    prefixes.add(int(num_str))
+    # Now, just count up from zero until a block is missing
     count = 0
-    while True:
-        c = False
-        for k in state_dict_keys:
-            if k.startswith(prefix_string.format(count)):
-                c = True
-                break
-        if c == False:
-            break
+    while count in prefixes:
         count += 1
     return count
 
@@ -24,13 +30,20 @@ def calculate_transformer_depth(prefix, state_dict_keys, state_dict):
     use_linear_in_transformer = False
 
     transformer_prefix = prefix + "1.transformer_blocks."
-    transformer_keys = sorted(list(filter(lambda a: a.startswith(transformer_prefix), state_dict_keys)))
+    # Pre-filter instead of filtering repeatedly for each key
+    transformer_keys = sorted([k for k in state_dict_keys if k.startswith(transformer_prefix)])
     if len(transformer_keys) > 0:
         last_transformer_depth = count_blocks(state_dict_keys, transformer_prefix + '{}')
         context_dim = state_dict['{}0.attn2.to_k.weight'.format(transformer_prefix)].shape[1]
         use_linear_in_transformer = len(state_dict['{}1.proj_in.weight'.format(prefix)].shape) == 2
-        time_stack = '{}1.time_stack.0.attn1.to_q.weight'.format(prefix) in state_dict or '{}1.time_mix_blocks.0.attn1.to_q.weight'.format(prefix) in state_dict
-        time_stack_cross = '{}1.time_stack.0.attn2.to_q.weight'.format(prefix) in state_dict or '{}1.time_mix_blocks.0.attn2.to_q.weight'.format(prefix) in state_dict
+        time_stack = (
+            '{}1.time_stack.0.attn1.to_q.weight'.format(prefix) in state_dict or
+            '{}1.time_mix_blocks.0.attn1.to_q.weight'.format(prefix) in state_dict
+        )
+        time_stack_cross = (
+            '{}1.time_stack.0.attn2.to_q.weight'.format(prefix) in state_dict or
+            '{}1.time_mix_blocks.0.attn2.to_q.weight'.format(prefix) in state_dict
+        )
         return last_transformer_depth, context_dim, use_linear_in_transformer, time_stack, time_stack_cross
     return None
 
