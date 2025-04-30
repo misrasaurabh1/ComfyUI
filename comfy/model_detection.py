@@ -494,20 +494,18 @@ def model_config_from_unet(state_dict, unet_key_prefix, use_base_if_no_match=Fal
     return model_config
 
 def unet_prefix_from_state_dict(state_dict):
-    candidates = ["model.diffusion_model.", #ldm/sgm models
-                  "model.model.", #audio models
-                  "net.", #cosmos
-                  ]
-    counts = {k: 0 for k in candidates}
+    candidates = ["model.diffusion_model.", "model.model.", "net."]
+    counts = [0, 0, 0]
     for k in state_dict:
-        for c in candidates:
-            if k.startswith(c):
-                counts[c] += 1
-                break
-
-    top = max(counts, key=counts.get)
-    if counts[top] > 5:
-        return top
+        if k.startswith("model.diffusion_model."):
+            counts[0] += 1
+        elif k.startswith("model.model."):
+            counts[1] += 1
+        elif k.startswith("net."):
+            counts[2] += 1
+    max_count = max(counts)
+    if max_count > 5:
+        return candidates[counts.index(max_count)]
     else:
         return "model." #aura flow and others
 
