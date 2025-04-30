@@ -7,15 +7,39 @@ import logging
 import torch
 
 def count_blocks(state_dict_keys, prefix_string):
+    """
+    Optimized implementation:
+    - Scan state_dict_keys once, extract block numbers from prefix matches.
+    - Return the smallest integer such that prefix_string.format(i) does not appear.
+    """
+    indices = set()
+    prefix_template = prefix_string
+    plen = None
+
+    # Determine format point so we can extract numbers efficiently
+    if '{}' in prefix_template:
+        split_parts = prefix_template.split('{}')
+        prefix_start = split_parts[0]
+        prefix_end = split_parts[1] if len(split_parts) > 1 else ''
+        plen = len(prefix_start)
+        enlen = len(prefix_end)
+    else:
+        # fallback to original logic if not found
+        prefix_start = prefix_template
+        prefix_end = ''
+        plen = len(prefix_start)
+        enlen = 0
+
+    for k in state_dict_keys:
+        if k.startswith(prefix_start) and (prefix_end == '' or k.endswith(prefix_end)):
+            # Try to extract integer between prefix and (optional) suffix
+            mid = k[plen:len(k)-enlen if enlen else None]
+            if mid.isdigit():
+                indices.add(int(mid))
+
+    # Find the smallest nonnegative integer not in indices
     count = 0
-    while True:
-        c = False
-        for k in state_dict_keys:
-            if k.startswith(prefix_string.format(count)):
-                c = True
-                break
-        if c == False:
-            break
+    while count in indices:
         count += 1
     return count
 
