@@ -124,9 +124,31 @@ class EMAWarmup:
 
     def get_value(self):
         """Gets the current EMA decay rate."""
-        epoch = max(0, self.last_epoch - self.start_at)
-        value = 1 - (1 + epoch / self.inv_gamma) ** -self.power
-        return 0. if epoch < 0 else min(self.max_value, max(self.min_value, value))
+        start_at = self.start_at
+        last_epoch = self.last_epoch
+        inv_gamma = self.inv_gamma
+        power = self.power
+        min_value = self.min_value
+        max_value = self.max_value
+
+        epoch = last_epoch - start_at
+        if epoch < 0:
+            return 0.0
+
+        ep_div = epoch / inv_gamma
+
+        # Fast path for common powers
+        if power == 1.0:
+            value = 1.0 - 1.0 / (1.0 + ep_div)
+        else:
+            value = 1.0 - (1.0 + ep_div) ** -power
+
+        # Clamp to boundaries
+        if value < min_value:
+            return min_value
+        if value > max_value:
+            return max_value
+        return value
 
     def step(self):
         """Updates the step count."""
