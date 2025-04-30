@@ -165,18 +165,20 @@ def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
     pos: a list of positions to be encoded: size (M,)
     out: (M, D)
     """
+    # use float64 to preserve the original behavior
     assert embed_dim % 2 == 0
-    omega = np.arange(embed_dim // 2, dtype=np.float64)
-    omega /= embed_dim / 2.0
-    omega = 1.0 / 10000**omega  # (D/2,)
-
+    half_dim = embed_dim // 2
+    # Compute omega in one go and use float64 precision
+    omega = 1.0 / np.power(10000, np.arange(half_dim, dtype=np.float64) / half_dim)  # (D/2,)
     pos = pos.reshape(-1)  # (M,)
-    out = np.einsum("m,d->md", pos, omega)  # (M, D/2), outer product
-
-    emb_sin = np.sin(out)  # (M, D/2)
-    emb_cos = np.cos(out)  # (M, D/2)
-
-    emb = np.concatenate([emb_sin, emb_cos], axis=1)  # (M, D)
+    # Use broadcasting instead of einsum/outer for best memory and speed performance
+    out = np.multiply.outer(pos, omega)  # (M, D/2)
+    
+    # Pre-allocate output, to avoid np.concatenate
+    emb = np.empty((pos.shape[0], embed_dim), dtype=out.dtype)
+    # Fill sin then cos directly
+    np.sin(out, out=emb[:, :half_dim])
+    np.cos(out, out=emb[:, half_dim:])
     return emb
 
 def get_1d_sincos_pos_embed_from_grid_torch(embed_dim, pos, device=None, dtype=torch.float32):
