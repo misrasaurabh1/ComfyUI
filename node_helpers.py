@@ -47,8 +47,31 @@ def string_to_torch_dtype(string):
 
 def image_alpha_fix(destination, source):
     if destination.shape[-1] < source.shape[-1]:
-        source = source[...,:destination.shape[-1]]
+        source = source[..., :destination.shape[-1]]
     elif destination.shape[-1] > source.shape[-1]:
-        destination = torch.nn.functional.pad(destination, (0, 1))
-        destination[..., -1] = 1.0
+        # Only pad if necessary
+        padded = torch.nn.functional.pad(destination, (0, 1))
+        padded[..., -1] = 1.0
+        destination = padded
     return destination, source
+
+def _fast_crop_centered(samples, old_width, old_height, width, height):
+    old_aspect = old_width / old_height
+    new_aspect = width / height
+    x = 0
+    y = 0
+    if old_aspect > new_aspect:
+        cropw = round(old_width - old_width * (new_aspect / old_aspect))
+        x = cropw // 2
+        w = old_width - cropw
+        h = old_height
+    elif old_aspect < new_aspect:
+        croph = round(old_height - old_height * (old_aspect / new_aspect))
+        y = croph // 2
+        h = old_height - croph
+        w = old_width
+    else:
+        h = old_height
+        w = old_width
+    # Use narrow for efficiency and avoid tensor copy where possible
+    return samples.narrow(-2, y, h).narrow(-1, x, w)

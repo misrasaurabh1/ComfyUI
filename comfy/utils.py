@@ -28,6 +28,7 @@ import logging
 import itertools
 from torch.nn.functional import interpolate
 from einops import rearrange
+import comfy.utils
 
 ALWAYS_SAFE_LOAD = False
 if hasattr(torch.serialization, "add_safe_globals"):  # TODO: this was added in pytorch 2.4, the unsafe path should be removed once earlier versions are deprecated
@@ -829,38 +830,38 @@ def lanczos(samples, width, height):
     return result.to(samples.device, samples.dtype)
 
 def common_upscale(samples, width, height, upscale_method, crop):
-        orig_shape = tuple(samples.shape)
-        if len(orig_shape) > 4:
-            samples = samples.reshape(samples.shape[0], samples.shape[1], -1, samples.shape[-2], samples.shape[-1])
-            samples = samples.movedim(2, 1)
-            samples = samples.reshape(-1, orig_shape[1], orig_shape[-2], orig_shape[-1])
-        if crop == "center":
-            old_width = samples.shape[-1]
-            old_height = samples.shape[-2]
-            old_aspect = old_width / old_height
-            new_aspect = width / height
-            x = 0
-            y = 0
-            if old_aspect > new_aspect:
-                x = round((old_width - old_width * (new_aspect / old_aspect)) / 2)
-            elif old_aspect < new_aspect:
-                y = round((old_height - old_height * (old_aspect / new_aspect)) / 2)
-            s = samples.narrow(-2, y, old_height - y * 2).narrow(-1, x, old_width - x * 2)
-        else:
-            s = samples
+    orig_shape = tuple(samples.shape)
+    if len(orig_shape) > 4:
+        # Merge middle dims to batch, then split back out later
+        batch = samples.shape[0]
+        C = samples.shape[1]
+        view_size = int(torch.prod(torch.tensor(samples.shape[2:-2])))
+        samples = samples.reshape(batch, C, view_size, orig_shape[-2], orig_shape[-1])
+        samples = samples.movedim(2, 1)
+        samples = samples.reshape(-1, C, orig_shape[-2], orig_shape[-1])
 
-        if upscale_method == "bislerp":
-            out = bislerp(s, width, height)
-        elif upscale_method == "lanczos":
-            out = lanczos(s, width, height)
-        else:
-            out = torch.nn.functional.interpolate(s, size=(height, width), mode=upscale_method)
+    if crop == "center":
+        old_width, old_height = samples.shape[-1], samples.shape[-2]
+        s = _fast_crop_centered(samples, old_width, old_height, width, height)
+    else:
+        s = samples
 
-        if len(orig_shape) == 4:
-            return out
+    if upscale_method == "bislerp":
+        out = comfy.utils.bislerp(s, width, height)
+    elif upscale_method == "lanczos":
+        out = comfy.utils.lanczos(s, width, height)
+    else:  # torch interpolate
+        out = torch.nn.functional.interpolate(s, size=(height, width), mode=upscale_method)
 
-        out = out.reshape((orig_shape[0], -1, orig_shape[1]) + (height, width))
-        return out.movedim(2, 1).reshape(orig_shape[:-2] + (height, width))
+    if len(orig_shape) == 4:
+        return out
+    # Reshape to original
+    batch, C = orig_shape[0], orig_shape[1]
+    total = int(torch.prod(torch.tensor(orig_shape[2:-2])))
+    out = out.view(batch, total, C, height, width)
+    # inverse the move-dim
+    out = out.movedim(2, 1).reshape(orig_shape[:-2] + (height, width))
+    return out
 
 def get_tiled_scale_steps(width, height, tile_x, tile_y, overlap):
     rows = 1 if height <= tile_y else math.ceil((height - overlap) / (tile_y - overlap))
@@ -1071,3 +1072,24 @@ def upscale_dit_mask(mask: torch.Tensor, img_size_in, img_size_out):
             dim=1
         )
         return out
+
+def _fast_crop_centered(samples, old_width, old_height, width, height):
+    old_aspect = old_width / old_height
+    new_aspect = width / height
+    x = 0
+    y = 0
+    if old_aspect > new_aspect:
+        cropw = round(old_width - old_width * (new_aspect / old_aspect))
+        x = cropw // 2
+        w = old_width - cropw
+        h = old_height
+    elif old_aspect < new_aspect:
+        croph = round(old_height - old_height * (old_aspect / new_aspect))
+        y = croph // 2
+        h = old_height - croph
+        w = old_width
+    else:
+        h = old_height
+        w = old_width
+    # Use narrow for efficiency and avoid tensor copy where possible
+    return samples.narrow(-2, y, h).narrow(-1, x, w)
