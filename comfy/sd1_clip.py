@@ -336,21 +336,24 @@ def unescape_important(text):
 
 def safe_load_embed_zip(embed_path):
     with zipfile.ZipFile(embed_path) as myzip:
-        names = list(filter(lambda a: "data/" in a, myzip.namelist()))
-        names.reverse()
-        for n in names:
+        names = myzip.namelist()
+        # process in reverse order, filter as we go for "data/" (faster, less memory)
+        for n in reversed(names):
+            if "data/" not in n:
+                continue
             with myzip.open(n) as myfile:
                 data = myfile.read()
-                number = len(data) // 4
-                length_embed = 1024 #sd2.x
-                if number < 768:
+                n_bytes = len(data)
+                if n_bytes < 768 * 4:
                     continue
+                number = n_bytes // 4
+                length_embed = 1024 # sd2.x default
                 if number % 768 == 0:
-                    length_embed = 768 #sd1.x
+                    length_embed = 768 # sd1.x
                 num_embeds = number // length_embed
+                # Use frombuffer&reshape without .clone() for better performance (safe as data is fresh from read)
                 embed = torch.frombuffer(data, dtype=torch.float)
-                out = embed.reshape((num_embeds, length_embed)).clone()
-                del embed
+                out = embed.reshape((num_embeds, length_embed))
                 return out
 
 def expand_directory_list(directories):
