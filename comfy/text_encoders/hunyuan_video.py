@@ -8,16 +8,11 @@ import numbers
 
 
 def llama_detect(state_dict, prefix=""):
-    out = {}
-    t5_key = "{}model.norm.weight".format(prefix)
-    if t5_key in state_dict:
-        out["dtype_llama"] = state_dict[t5_key].dtype
-
-    scaled_fp8_key = "{}scaled_fp8".format(prefix)
-    if scaled_fp8_key in state_dict:
-        out["llama_scaled_fp8"] = state_dict[scaled_fp8_key].dtype
-
-    return out
+    weight_name = "model.layers.0.self_attn.k_proj.weight"
+    for sd in clip_data:
+        if weight_name in sd:
+            return _llama_detect_single_state_dict(sd)
+    return {}
 
 
 class LLAMA3Tokenizer(sd1_clip.SDTokenizer):
@@ -153,3 +148,14 @@ def hunyuan_video_clip(dtype_llama=None, llama_scaled_fp8=None):
                 model_options["llama_scaled_fp8"] = llama_scaled_fp8
             super().__init__(dtype_llama=dtype_llama, device=device, dtype=dtype, model_options=model_options)
     return HunyuanVideoClipModel_
+def _llama_detect_single_state_dict(state_dict, prefix=""):
+    out = {}
+    t5_key = prefix + "model.norm.weight"
+    v = state_dict.get(t5_key)
+    if v is not None:
+        out["dtype_llama"] = v.dtype
+    scaled_fp8_key = prefix + "scaled_fp8"
+    v = state_dict.get(scaled_fp8_key)
+    if v is not None:
+        out["llama_scaled_fp8"] = v.dtype
+    return out

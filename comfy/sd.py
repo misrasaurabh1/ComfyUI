@@ -758,11 +758,9 @@ def t5xxl_detect(clip_data):
 
 def llama_detect(clip_data):
     weight_name = "model.layers.0.self_attn.k_proj.weight"
-
     for sd in clip_data:
         if weight_name in sd:
-            return comfy.text_encoders.hunyuan_video.llama_detect(sd)
-
+            return _llama_detect_single_state_dict(sd)
     return {}
 
 def load_text_encoder_state_dicts(state_dicts=[], embedding_directory=None, clip_type=CLIPType.STABLE_DIFFUSION, model_options={}):
@@ -1088,3 +1086,14 @@ def save_checkpoint(output_path, model, clip=None, vae=None, clip_vision=None, m
             sd[k] = t.contiguous()
 
     comfy.utils.save_torch_file(sd, output_path, metadata=metadata)
+def _llama_detect_single_state_dict(state_dict, prefix=""):
+    out = {}
+    t5_key = prefix + "model.norm.weight"
+    v = state_dict.get(t5_key)
+    if v is not None:
+        out["dtype_llama"] = v.dtype
+    scaled_fp8_key = prefix + "scaled_fp8"
+    v = state_dict.get(scaled_fp8_key)
+    if v is not None:
+        out["llama_scaled_fp8"] = v.dtype
+    return out
