@@ -58,7 +58,6 @@ class PatchEmbed(nn.Module):
     """ 2D Image to Patch Embedding
     """
     dynamic_img_pad: torch.jit.Final[bool]
-
     def __init__(
             self,
             img_size: Optional[int] = 224,
@@ -77,32 +76,47 @@ class PatchEmbed(nn.Module):
             operations=None,
     ):
         super().__init__()
-        try:
-            len(patch_size)
-            self.patch_size = patch_size
-        except:
+
+        # Standardize patch_size tuple
+        if isinstance(patch_size, (tuple, list)):
+            patch_size_tuple = tuple(patch_size)
+        else:
             if conv3d:
-                self.patch_size = (patch_size, patch_size, patch_size)
+                patch_size_tuple = (patch_size, patch_size, patch_size)
             else:
-                self.patch_size = (patch_size, patch_size)
+                patch_size_tuple = (patch_size, patch_size)
+        self.patch_size = patch_size_tuple
         self.padding_mode = padding_mode
 
-        # flatten spatial dim and transpose to channels last, kept for bwd compat
         self.flatten = flatten
         self.strict_img_size = strict_img_size
         self.dynamic_img_pad = dynamic_img_pad
+
+        # Construction of Conv2d/3d and norm
         if conv3d:
-            self.proj = operations.Conv3d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_size, bias=bias, dtype=dtype, device=device)
+            self.proj = operations.Conv3d(
+                in_chans, embed_dim,
+                kernel_size=patch_size_tuple, stride=patch_size_tuple,
+                bias=bias, dtype=dtype, device=device
+            )
         else:
-            self.proj = operations.Conv2d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_size, bias=bias, dtype=dtype, device=device)
+            self.proj = operations.Conv2d(
+                in_chans, embed_dim,
+                kernel_size=patch_size_tuple, stride=patch_size_tuple,
+                bias=bias, dtype=dtype, device=device
+            )
         self.norm = norm_layer(embed_dim) if norm_layer else nn.Identity()
 
     def forward(self, x):
+        # Only pad if dynamic_img_pad and if required (pad_to_patch_size now cheap if no pad needed)
         if self.dynamic_img_pad:
-            x = comfy.ldm.common_dit.pad_to_patch_size(x, self.patch_size, padding_mode=self.padding_mode)
+            x = comfy.ldm.common_dit.pad_to_patch_size(
+                x, self.patch_size, padding_mode=self.padding_mode
+            )
         x = self.proj(x)
         if self.flatten:
-            x = x.flatten(2).transpose(1, 2)  # NCHW -> NLC
+            # NCHW -> NLC
+            x = x.flatten(2).transpose(1, 2)
         x = self.norm(x)
         return x
 
