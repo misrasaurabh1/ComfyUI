@@ -209,10 +209,38 @@ class ExponentialLR(optim.lr_scheduler._LRScheduler):
         return self._get_closed_form_lr()
 
     def _get_closed_form_lr(self):
-        warmup = 1 - self.warmup ** (self.last_epoch + 1)
-        lr_mult = (self.decay ** (1 / self.num_steps)) ** self.last_epoch
-        return [warmup * max(self.min_lr, base_lr * lr_mult)
-                for base_lr in self.base_lrs]
+        # Pre-compute all powers to avoid repeated pow() calls inside the list comprehension
+        last_epoch = self.last_epoch
+        warmup = self.warmup
+        min_lr = self.min_lr
+        base_lrs = self.base_lrs
+        num_steps = self.num_steps
+        decay = self.decay
+
+        # warmup calculation
+        if warmup == 0.:
+            warmup_factor = 1.0
+        else:
+            warmup_factor = 1.0 - pow(warmup, last_epoch + 1)
+        
+        # lr multiplication factor
+        if decay == 1.0:
+            lr_mult = 1.0
+        elif last_epoch == 0:
+            lr_mult = 1.0
+        else:
+            lr_mult = pow(decay, last_epoch / num_steps)
+        
+        # Optimize max+mult in single step for each base_lr
+        w_lr_mult = warmup_factor * lr_mult
+        # If w_lr_mult is zero, just return zeros right away
+        if w_lr_mult == 0:
+            return [0.0 for _ in base_lrs]
+        if min_lr == 0.:
+            return [w_lr_mult * base_lr for base_lr in base_lrs]
+        else:
+            return [warmup_factor * max(min_lr, base_lr * lr_mult)
+                    for base_lr in base_lrs]
 
 
 def rand_log_normal(shape, loc=0., scale=1., device='cpu', dtype=torch.float32):
