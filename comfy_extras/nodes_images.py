@@ -18,12 +18,10 @@ MAX_RESOLUTION = nodes.MAX_RESOLUTION
 class ImageCrop:
     @classmethod
     def INPUT_TYPES(s):
-        return {"required": { "image": ("IMAGE",),
-                              "width": ("INT", {"default": 512, "min": 1, "max": MAX_RESOLUTION, "step": 1}),
-                              "height": ("INT", {"default": 512, "min": 1, "max": MAX_RESOLUTION, "step": 1}),
-                              "x": ("INT", {"default": 0, "min": 0, "max": MAX_RESOLUTION, "step": 1}),
-                              "y": ("INT", {"default": 0, "min": 0, "max": MAX_RESOLUTION, "step": 1}),
-                              }}
+        # Static attribute for the class (created only on first access)
+        if not hasattr(s, '_input_types'):
+            s._input_types = _imagecrop_input_types()
+        return s._input_types
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "crop"
 
@@ -189,6 +187,22 @@ class SaveAnimatedPNG:
         })
 
         return { "ui": { "images": results, "animated": (True,)} }
+
+
+# Helper to build shared static INPUT_TYPES structure once
+def _imagecrop_input_types():
+    # Lazy import to avoid global scope dependency if not needed
+    import nodes
+    MAX_RESOLUTION = nodes.MAX_RESOLUTION
+    return {
+        "required": {
+            "image": ("IMAGE",),
+            "width": ("INT", {"default": 512, "min": 1, "max": MAX_RESOLUTION, "step": 1}),
+            "height": ("INT", {"default": 512, "min": 1, "max": MAX_RESOLUTION, "step": 1}),
+            "x": ("INT", {"default": 0, "min": 0, "max": MAX_RESOLUTION, "step": 1}),
+            "y": ("INT", {"default": 0, "min": 0, "max": MAX_RESOLUTION, "step": 1}),
+        }
+    }
 
 NODE_CLASS_MAPPINGS = {
     "ImageCrop": ImageCrop,
