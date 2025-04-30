@@ -6,12 +6,14 @@ import comfy.utils
 import comfy.hooks
 import comfy.patcher_extension
 from typing import TYPE_CHECKING
+
 if TYPE_CHECKING:
     from comfy.model_patcher import ModelPatcher
     from comfy.model_base import BaseModel
     from comfy.controlnet import ControlBase
 
 def prepare_mask(noise_mask, shape, device):
+    # No change needed
     return comfy.utils.reshape_mask(noise_mask, shape).to(device)
 
 def get_models_from_cond(cond, model_type):
@@ -166,3 +168,17 @@ def prepare_model_patcher(model: 'ModelPatcher', conds, model_options: dict):
         comfy.patcher_extension.merge_nested_dicts(to_load_options.setdefault(wc_name, {}), model_options["transformer_options"][wc_name],
                                                     copy_dict1=False)
     return to_load_options
+
+def repeat_to_batch_size_fast(tensor, batch_size, dim=0):
+    # Fast path: avoid torch.repeat if unnecessary, minimize mem usage
+    current = tensor.shape[dim]
+    if current == batch_size:
+        return tensor
+    if current > batch_size:
+        # Only slice if batch_size is smaller
+        return tensor.narrow(dim, 0, batch_size)
+    # Repeat efficiently: only repeat the minimal necessary times, then slice
+    reps = [1] * tensor.ndim
+    reps[dim] = -(-batch_size // current)  # ceil division
+    tensor = tensor.repeat(*reps)
+    return tensor.narrow(dim, 0, batch_size)
