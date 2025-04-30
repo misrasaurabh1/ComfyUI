@@ -4,6 +4,8 @@ from typing import Tuple, Union
 from .dual_conv3d import DualConv3d
 from .causal_conv3d import CausalConv3d
 import comfy.ops
+from functools import lru_cache
+
 ops = comfy.ops.disable_weight_init
 
 def make_conv_nd(
@@ -79,12 +81,23 @@ def make_linear_nd(
     bias=True,
 ):
     if dims == 2:
-        return ops.Conv2d(
-            in_channels=in_channels, out_channels=out_channels, kernel_size=1, bias=bias
-        )
-    elif dims == 3 or dims == (2, 1):
-        return ops.Conv3d(
-            in_channels=in_channels, out_channels=out_channels, kernel_size=1, bias=bias
-        )
+        return _get_conv2d(in_channels, out_channels, bias)
+    elif dims in (3, (2, 1)):
+        return _get_conv3d(in_channels, out_channels, bias)
     else:
         raise ValueError(f"unsupported dimensions: {dims}")
+
+
+# Helper function to cache Conv2d layer creation
+@lru_cache(maxsize=32)
+def _get_conv2d(in_channels, out_channels, bias):
+    return ops.Conv2d(
+        in_channels=in_channels, out_channels=out_channels, kernel_size=1, bias=bias
+    )
+
+# Helper function to cache Conv3d layer creation
+@lru_cache(maxsize=32)
+def _get_conv3d(in_channels, out_channels, bias):
+    return ops.Conv3d(
+        in_channels=in_channels, out_channels=out_channels, kernel_size=1, bias=bias
+    )
