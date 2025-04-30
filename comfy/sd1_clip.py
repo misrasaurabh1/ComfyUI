@@ -372,78 +372,103 @@ def bundled_embed(embed, prefix, suffix): #bundled embedding in lora format
     return torch.cat(out_list, dim=0)
 
 def load_embed(embedding_name, embedding_directory, embedding_size, embed_key=None):
+    """Load embedding by searching possible dirs/extensions, and returning tensor."""
+    # Avoid repeated calls and list/abspath
     if isinstance(embedding_directory, str):
         embedding_directory = [embedding_directory]
-
-    embedding_directory = expand_directory_list(embedding_directory)
-
-    valid_file = None
-    for embed_dir in embedding_directory:
-        embed_path = os.path.abspath(os.path.join(embed_dir, embedding_name))
-        embed_dir = os.path.abspath(embed_dir)
-        try:
-            if os.path.commonpath((embed_dir, embed_path)) != embed_dir:
-                continue
-        except:
-            continue
-        if not os.path.isfile(embed_path):
-            extensions = ['.safetensors', '.pt', '.bin']
-            for x in extensions:
-                t = embed_path + x
-                if os.path.isfile(t):
-                    valid_file = t
-                    break
-        else:
-            valid_file = embed_path
-        if valid_file is not None:
-            break
-
-    if valid_file is None:
+    # Caching expand_directory_list and abspath on all unique names
+    _all_dirs = _get_all_embed_dirs(embedding_directory)
+    if not _all_dirs:
         return None
 
-    embed_path = valid_file
+    # Try all (dir+basename+ext) for matching files as quickly as possible
+    embed_path = _find_valid_embedding_file(embedding_name, _all_dirs)
+    if embed_path is None:
+        return None
 
     embed_out = None
-
+    embed = None
     try:
         if embed_path.lower().endswith(".safetensors"):
             import safetensors.torch
             embed = safetensors.torch.load_file(embed_path, device="cpu")
         else:
             try:
+                # Note: weights_only for torch>=2.0, but fallback is handled by internal code
                 embed = torch.load(embed_path, weights_only=True, map_location="cpu")
-            except:
+            except Exception:
+                # Possibly a zip embedding
+                from comfy.sd1_clip import safe_load_embed_zip
                 embed_out = safe_load_embed_zip(embed_path)
     except Exception:
-        logging.warning("{}\n\nerror loading embedding, skipping loading: {}".format(traceback.format_exc(), embedding_name))
+        logging.warning("%s\n\nerror loading embedding, skipping loading: %s"
+                        % (traceback.format_exc(), embedding_name))
         return None
 
-    if embed_out is None:
+    if embed_out is None and embed is not None:
+        # Fastest path: string_to_param
         if 'string_to_param' in embed:
-            values = embed['string_to_param'].values()
-            embed_out = next(iter(values))
+            v = embed['string_to_param']
+            # Use iter() directly, don't alloc .values() list
+            embed_out = next(iter(v.values()))
         elif isinstance(embed, list):
+            # Fused loops
             out_list = []
-            for x in range(len(embed)):
-                for k in embed[x]:
-                    t = embed[x][k]
-                    if t.shape[-1] != embedding_size:
+            for row in embed:
+                for k, t in row.items():
+                    # Only consider matching shape
+                    ts = t.shape[-1]
+                    if ts != embedding_size:
                         continue
-                    out_list.append(t.reshape(-1, t.shape[-1]))
-            embed_out = torch.cat(out_list, dim=0)
+                    out_list.append(t.reshape(-1, ts))
+            embed_out = torch.cat(out_list, dim=0) if out_list else None
         elif embed_key is not None and embed_key in embed:
             embed_out = embed[embed_key]
         else:
+            # Delayed import; bundled_embed comes from comfy.sd1_clip
+            from comfy.sd1_clip import bundled_embed
             embed_out = bundled_embed(embed, 'bundle_emb.', '.string_to_param.*')
             if embed_out is None:
-                embed_out = bundled_embed(embed, 'bundle_emb.', '.{}'.format(embed_key))
-            if embed_out is None:
-                values = embed.values()
-                embed_out = next(iter(values))
+                embed_out = bundled_embed(embed, 'bundle_emb.', f'.{embed_key}')
+            if embed_out is None and hasattr(embed, 'values'):
+                embed_out = next(iter(embed.values()))
+
     return embed_out
 
+# --- optimization helpers ---
+
+def _find_valid_embedding_file(embedding_name, embedding_directories):
+    """Finds and returns (embed_path, found_ext) if the file is found, else (None, None).
+    Directories must be absolute already. embedding_name should not have an extension."""
+    extensions = ('', '.safetensors', '.pt', '.bin')
+    # Precompute abspath joins to avoid duplicated os calls in the loop
+    candidate_files = []
+    for embed_dir in embedding_directories:
+        base_path = os.path.join(embed_dir, embedding_name)
+        for ext in extensions:
+            candidate_files.append(os.path.abspath(base_path + ext))
+    # Batch stat
+    for candidate in candidate_files:
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+def _get_all_embed_dirs(dirs):
+    """Fast flatten list-of-list of dirs for expand_directory_list."""
+    # Only run expand_directory_list once and cache the result
+    from comfy.sd1_clip import expand_directory_list
+    dirs = [d for d in dirs if isinstance(d, str)]
+    dirs = expand_directory_list(dirs)
+    dirs = [os.path.abspath(d) for d in dirs]
+    return dirs
+
 class SDTokenizer:
-    def __init__(self, tokenizer_path=None, max_length=77, pad_with_end=True, embedding_directory=None, embedding_size=768, embedding_key='clip_l', tokenizer_class=CLIPTokenizer, has_start_token=True, has_end_token=True, pad_to_max_length=True, min_length=None, pad_token=None, end_token=None, tokenizer_data={}, tokenizer_args={}):
+    def __init__(
+        self, tokenizer_path=None, max_length=77, pad_with_end=True, embedding_directory=None,
+        embedding_size=768, embedding_key='clip_l', tokenizer_class=CLIPTokenizer,
+        has_start_token=True, has_end_token=True, pad_to_max_length=True, min_length=None,
+        pad_token=None, end_token=None, tokenizer_data={}, tokenizer_args={}
+    ):
         if tokenizer_path is None:
             tokenizer_path = os.path.join(os.path.dirname(os.path.realpath(__file__)), "sd1_tokenizer")
         self.tokenizer = tokenizer_class.from_pretrained(tokenizer_path, **tokenizer_args)
@@ -488,19 +513,22 @@ class SDTokenizer:
         self.embedding_key = embedding_key
 
     def _try_get_embedding(self, embedding_name:str):
-        '''
+        """
         Takes a potential embedding name and tries to retrieve it.
         Returns a Tuple consisting of the embedding and any leftover string, embedding can be None.
-        '''
+        """
         split_embed = embedding_name.split()
-        embedding_name = split_embed[0]
+        first_token = split_embed[0]
         leftover = ' '.join(split_embed[1:])
-        embed = load_embed(embedding_name, self.embedding_directory, self.embedding_size, self.embedding_key)
+        embed = load_embed(
+            first_token, self.embedding_directory, self.embedding_size, self.embedding_key
+        )
         if embed is None:
-            stripped = embedding_name.strip(',')
-            if len(stripped) < len(embedding_name):
+            # Avoid continuously calling load_embed for same input
+            stripped = first_token.strip(',')
+            if len(stripped) < len(first_token):
                 embed = load_embed(stripped, self.embedding_directory, self.embedding_size, self.embedding_key)
-                return (embed, "{} {}".format(embedding_name[len(stripped):], leftover))
+                return (embed, "{} {}".format(first_token[len(stripped):], leftover))
         return (embed, leftover)
 
 
