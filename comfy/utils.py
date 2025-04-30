@@ -28,6 +28,8 @@ import logging
 import itertools
 from torch.nn.functional import interpolate
 from einops import rearrange
+import comfy.utils
+import torch.mps
 
 ALWAYS_SAFE_LOAD = False
 if hasattr(torch.serialization, "add_safe_globals"):  # TODO: this was added in pytorch 2.4, the unsafe path should be removed once earlier versions are deprecated
@@ -829,38 +831,55 @@ def lanczos(samples, width, height):
     return result.to(samples.device, samples.dtype)
 
 def common_upscale(samples, width, height, upscale_method, crop):
-        orig_shape = tuple(samples.shape)
-        if len(orig_shape) > 4:
-            samples = samples.reshape(samples.shape[0], samples.shape[1], -1, samples.shape[-2], samples.shape[-1])
-            samples = samples.movedim(2, 1)
-            samples = samples.reshape(-1, orig_shape[1], orig_shape[-2], orig_shape[-1])
-        if crop == "center":
-            old_width = samples.shape[-1]
-            old_height = samples.shape[-2]
-            old_aspect = old_width / old_height
-            new_aspect = width / height
-            x = 0
+    orig_shape = samples.shape
+    dim = len(orig_shape)
+    n, c = orig_shape[0], orig_shape[1]
+    last2 = orig_shape[-2], orig_shape[-1]
+
+    # Fast reshape for >4D inputs
+    if dim > 4:
+        # Flatten all dims except n, c, h, w
+        num_extra = 1
+        for d in orig_shape[2:-2]:
+            num_extra *= d
+        samples = samples.reshape(n, c, num_extra, last2[0], last2[1]).movedim(2, 1).reshape(-1, c, last2[0], last2[1])
+
+    # Only crop if needed
+    s = samples
+    if crop == "center":
+        old_h, old_w = samples.shape[-2], samples.shape[-1]
+        old_aspect = old_w / old_h
+        new_aspect = width / height
+
+        # Only assign x/y if needed
+        if old_aspect > new_aspect:
+            diff = old_w - int(old_w * (new_aspect / old_aspect))
+            x = diff // 2
             y = 0
-            if old_aspect > new_aspect:
-                x = round((old_width - old_width * (new_aspect / old_aspect)) / 2)
-            elif old_aspect < new_aspect:
-                y = round((old_height - old_height * (old_aspect / new_aspect)) / 2)
-            s = samples.narrow(-2, y, old_height - y * 2).narrow(-1, x, old_width - x * 2)
+        elif old_aspect < new_aspect:
+            diff = old_h - int(old_h * (old_aspect / new_aspect))
+            x = 0
+            y = diff // 2
         else:
-            s = samples
+            x = y = 0
+        # Only crop if needed
+        if x or y:
+            s = s.narrow(-2, y, old_h - y * 2).narrow(-1, x, old_w - x * 2)
 
-        if upscale_method == "bislerp":
-            out = bislerp(s, width, height)
-        elif upscale_method == "lanczos":
-            out = lanczos(s, width, height)
-        else:
-            out = torch.nn.functional.interpolate(s, size=(height, width), mode=upscale_method)
+    # Dispatch method using static import
+    if upscale_method == "bislerp":
+        out = comfy.utils.bislerp(s, width, height)
+    elif upscale_method == "lanczos":
+        out = comfy.utils.lanczos(s, width, height)
+    else:
+        out = torch.nn.functional.interpolate(s, size=(height, width), mode=upscale_method)
 
-        if len(orig_shape) == 4:
-            return out
-
-        out = out.reshape((orig_shape[0], -1, orig_shape[1]) + (height, width))
-        return out.movedim(2, 1).reshape(orig_shape[:-2] + (height, width))
+    # Fast path for 4D (common case)
+    if dim == 4:
+        return out
+    # Restore original "video" or ND shape
+    out = out.reshape((orig_shape[0], -1, orig_shape[1], height, width)).movedim(2, 1).reshape(orig_shape[:-2] + (height, width))
+    return out
 
 def get_tiled_scale_steps(width, height, tile_x, tile_y, overlap):
     rows = 1 if height <= tile_y else math.ceil((height - overlap) / (tile_y - overlap))
