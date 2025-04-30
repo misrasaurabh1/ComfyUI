@@ -70,7 +70,12 @@ def set_model_options_patch_replace(model_options, patch, name, block_name, numb
     return model_options
 
 def set_model_options_post_cfg_function(model_options, post_cfg_function, disable_cfg1_optimization=False):
-    model_options["sampler_post_cfg_function"] = model_options.get("sampler_post_cfg_function", []) + [post_cfg_function]
+    # Use in-place modification for efficiency
+    sampler_post_cfg_function = model_options.get("sampler_post_cfg_function")
+    if sampler_post_cfg_function is None:
+        model_options["sampler_post_cfg_function"] = [post_cfg_function]
+    else:
+        sampler_post_cfg_function.append(post_cfg_function)
     if disable_cfg1_optimization:
         model_options["disable_cfg1_optimization"] = True
     return model_options
