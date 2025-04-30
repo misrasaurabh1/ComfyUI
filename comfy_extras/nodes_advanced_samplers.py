@@ -1,8 +1,11 @@
+from __future__ import annotations
 import comfy.samplers
 import comfy.utils
 import torch
 import numpy as np
 from tqdm.auto import trange
+import comfy.model_patcher
+from comfy.k_diffusion import utils
 
 
 @torch.no_grad()
@@ -54,8 +57,6 @@ class SamplerLCMUpscale:
             scale_steps = None
         sampler = comfy.samplers.KSAMPLER(sample_lcm_upscale, extra_options={"total_upscale": scale_ratio, "upscale_steps": scale_steps, "upscale_method": upscale_method})
         return (sampler, )
-
-from comfy.k_diffusion.sampling import to_d
 import comfy.model_patcher
 
 @torch.no_grad()
@@ -67,14 +68,24 @@ def sample_euler_pp(model, x, sigmas, extra_args=None, callback=None, disable=No
         temp[0] = args["uncond_denoised"]
         return args["denoised"]
 
-    model_options = extra_args.get("model_options", {}).copy()
-    extra_args["model_options"] = comfy.model_patcher.set_model_options_post_cfg_function(model_options, post_cfg_function, disable_cfg1_optimization=True)
+    model_options = extra_args.get("model_options")
+    if model_options is None:
+        model_options = {}
+    else:
+        model_options = model_options.copy()
+    extra_args["model_options"] = comfy.model_patcher.set_model_options_post_cfg_function(
+        model_options, post_cfg_function, disable_cfg1_optimization=True
+    )
 
     s_in = x.new_ones([x.shape[0]])
+    append_dims = utils.append_dims  # Local alias for efficiency
+    model_call = model  # Local alias for efficiency
+
     for i in trange(len(sigmas) - 1, disable=disable):
         sigma_hat = sigmas[i]
-        denoised = model(x, sigma_hat * s_in, **extra_args)
-        d = to_d(x - denoised + temp[0], sigmas[i], denoised)
+        denoised = model_call(x, sigma_hat * s_in, **extra_args)
+        # Move temp[0] computation outside of to_d for efficiency and keep algebraic form
+        d = (x - denoised + temp[0]) / append_dims(sigmas[i], x.ndim)
         if callback is not None:
             callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigma_hat, 'denoised': denoised})
         dt = sigmas[i + 1] - sigma_hat
