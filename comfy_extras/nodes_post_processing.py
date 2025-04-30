@@ -35,16 +35,18 @@ class Blend:
 
     def blend_images(self, image1: torch.Tensor, image2: torch.Tensor, blend_factor: float, blend_mode: str):
         image1, image2 = node_helpers.image_alpha_fix(image1, image2)
-        image2 = image2.to(image1.device)
+        if image2.device != image1.device:
+            image2 = image2.to(image1.device, non_blocking=True)
         if image1.shape != image2.shape:
+            # Only permute if needed, and operate on a new variable to avoid multiple permutes.
             image2 = image2.permute(0, 3, 1, 2)
             image2 = comfy.utils.common_upscale(image2, image1.shape[2], image1.shape[1], upscale_method='bicubic', crop='center')
             image2 = image2.permute(0, 2, 3, 1)
 
         blended_image = self.blend_mode(image1, image2, blend_mode)
-        blended_image = image1 * (1 - blend_factor) + blended_image * blend_factor
-        blended_image = torch.clamp(blended_image, 0, 1)
-        return (blended_image,)
+        out = image1.mul(1 - blend_factor).add_(blended_image, alpha=blend_factor)
+        out = torch.clamp(out, 0, 1)
+        return (out,)
 
     def blend_mode(self, img1, img2, mode):
         if mode == "normal":
@@ -56,7 +58,12 @@ class Blend:
         elif mode == "overlay":
             return torch.where(img1 <= 0.5, 2 * img1 * img2, 1 - 2 * (1 - img1) * (1 - img2))
         elif mode == "soft_light":
-            return torch.where(img2 <= 0.5, img1 - (1 - 2 * img2) * img1 * (1 - img1), img1 + (2 * img2 - 1) * (self.g(img1) - img1))
+            # Soft light mode uses g(x)
+            return torch.where(
+                img2 <= 0.5,
+                img1 - (1 - 2 * img2) * img1 * (1 - img1),
+                img1 + (2 * img2 - 1) * (self.g(img1) - img1)
+            )
         elif mode == "difference":
             return img1 - img2
         else:
@@ -70,6 +77,27 @@ def gaussian_kernel(kernel_size: int, sigma: float, device=None):
     d = torch.sqrt(x * x + y * y)
     g = torch.exp(-(d * d) / (2.0 * sigma * sigma))
     return g / g.sum()
+
+def _fast_crop_centered(samples, old_width, old_height, width, height):
+    old_aspect = old_width / old_height
+    new_aspect = width / height
+    x = 0
+    y = 0
+    if old_aspect > new_aspect:
+        cropw = round(old_width - old_width * (new_aspect / old_aspect))
+        x = cropw // 2
+        w = old_width - cropw
+        h = old_height
+    elif old_aspect < new_aspect:
+        croph = round(old_height - old_height * (old_aspect / new_aspect))
+        y = croph // 2
+        h = old_height - croph
+        w = old_width
+    else:
+        h = old_height
+        w = old_width
+    # Use narrow for efficiency and avoid tensor copy where possible
+    return samples.narrow(-2, y, h).narrow(-1, x, w)
 
 class Blur:
     def __init__(self):
