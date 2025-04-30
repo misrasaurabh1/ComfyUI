@@ -102,18 +102,32 @@ class WanFunControlToVideo:
 class WanFunInpaintToVideo:
     @classmethod
     def INPUT_TYPES(s):
-        return {"required": {"positive": ("CONDITIONING", ),
-                             "negative": ("CONDITIONING", ),
-                             "vae": ("VAE", ),
-                             "width": ("INT", {"default": 832, "min": 16, "max": nodes.MAX_RESOLUTION, "step": 16}),
-                             "height": ("INT", {"default": 480, "min": 16, "max": nodes.MAX_RESOLUTION, "step": 16}),
-                             "length": ("INT", {"default": 81, "min": 1, "max": nodes.MAX_RESOLUTION, "step": 4}),
-                             "batch_size": ("INT", {"default": 1, "min": 1, "max": 4096}),
-                },
-                "optional": {"clip_vision_output": ("CLIP_VISION_OUTPUT", ),
-                             "start_image": ("IMAGE", ),
-                             "end_image": ("IMAGE", ),
-                }}
+        # Optimization: Cache the structure based on nodes.MAX_RESOLUTION to avoid unnecessary repeated dict construction.
+        max_res = nodes.MAX_RESOLUTION
+        cache = getattr(s, "_input_types_cache", None)
+        cached_max_res = getattr(s, "_cached_max_res", None)
+        if cache is not None and cached_max_res == max_res:
+            return cache
+
+        required = {
+            "positive": ("CONDITIONING", ),
+            "negative": ("CONDITIONING", ),
+            "vae": ("VAE", ),
+            "width": ("INT", {"default": 832, "min": 16, "max": max_res, "step": 16}),
+            "height": ("INT", {"default": 480, "min": 16, "max": max_res, "step": 16}),
+            "length": ("INT", {"default": 81, "min": 1, "max": max_res, "step": 4}),
+            "batch_size": ("INT", {"default": 1, "min": 1, "max": 4096}),
+        }
+        optional = {
+            "clip_vision_output": ("CLIP_VISION_OUTPUT", ),
+            "start_image": ("IMAGE", ),
+            "end_image": ("IMAGE", ),
+        }
+        result = {"required": required, "optional": optional}
+
+        s._input_types_cache = result
+        s._cached_max_res = max_res
+        return result
 
     RETURN_TYPES = ("CONDITIONING", "CONDITIONING", "LATENT")
     RETURN_NAMES = ("positive", "negative", "latent")
