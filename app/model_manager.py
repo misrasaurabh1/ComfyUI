@@ -84,6 +84,7 @@ class ModelFileManager:
         for index, folder in enumerate(folders[0]):
             if not os.path.isdir(folder):
                 continue
+
             out = self.cache_model_file_list_(folder)
             if out is None:
                 out = self.recursive_search_models_(folder, index)
@@ -94,57 +95,63 @@ class ModelFileManager:
 
     def cache_model_file_list_(self, folder: str):
         model_file_list_cache = self.get_cache(folder)
-
         if model_file_list_cache is None:
             return None
-        if not os.path.isdir(folder):
+        # Check the folder's mtime directly only once
+        try:
+            folder_mtime = os.path.getmtime(folder)
+        except FileNotFoundError:
             return None
-        if os.path.getmtime(folder) != model_file_list_cache[1]:
+        # Check if folder mtime matches
+        if folder_mtime != model_file_list_cache[1].get(folder, None):
             return None
-        for x in model_file_list_cache[1]:
-            time_modified = model_file_list_cache[1][x]
-            folder = x
-            if os.path.getmtime(folder) != time_modified:
+        # Check that all subdirectory mtimes haven't changed
+        for subfolder, cached_mtime in model_file_list_cache[1].items():
+            try:
+                if os.path.getmtime(subfolder) != cached_mtime:
+                    return None
+            except FileNotFoundError:
                 return None
-
         return model_file_list_cache
 
     def recursive_search_models_(self, directory: str, pathIndex: int) -> tuple[list[str], dict[str, float], float]:
         if not os.path.isdir(directory):
             return [], {}, time.perf_counter()
 
-        excluded_dir_names = [".git"]
+        excluded_dir_names = {".git"}
         # TODO use settings
         include_hidden_files = False
 
         result: list[str] = []
         dirs: dict[str, float] = {}
 
+        # Use os.walk with updated subdirs/filenames filtering
         for dirpath, subdirs, filenames in os.walk(directory, followlinks=True, topdown=True):
-            subdirs[:] = [d for d in subdirs if d not in excluded_dir_names]
+            # Filter subdirectories to avoid excluded and hidden dirs
+            subdirs[:] = [d for d in subdirs if d not in excluded_dir_names and (include_hidden_files or not d.startswith('.'))]
+            # Only include non-hidden files if required
             if not include_hidden_files:
-                subdirs[:] = [d for d in subdirs if not d.startswith(".")]
-                filenames = [f for f in filenames if not f.startswith(".")]
-
+                filenames = [f for f in filenames if not f.startswith('.')]
+            # Only include supported file extensions
             filenames = filter_files_extensions(filenames, folder_paths.supported_pt_extensions)
+            if filenames:
+                dirpath_rel = os.path.relpath(dirpath, directory)
+                # Optimize relpath usage for same directory
+                if dirpath_rel == '.':
+                    rel_result = filenames
+                else:
+                    rel_result = [os.path.join(dirpath_rel, name) for name in filenames]
+                result.extend(rel_result)
 
-            for file_name in filenames:
-                try:
-                    relative_path = os.path.relpath(os.path.join(dirpath, file_name), directory)
-                    result.append(relative_path)
-                except:
-                    logging.warning(f"Warning: Unable to access {file_name}. Skipping this file.")
-                    continue
-
+            # Add directory mtimes for changed folder detection
             for d in subdirs:
-                path: str = os.path.join(dirpath, d)
+                path = os.path.join(dirpath, d)
                 try:
                     dirs[path] = os.path.getmtime(path)
                 except FileNotFoundError:
                     logging.warning(f"Warning: Unable to access {path}. Skipping this path.")
-                    continue
 
-        return [{"name": f, "pathIndex": pathIndex} for f in result], dirs, time.perf_counter()
+        return ([{"name": f, "pathIndex": pathIndex} for f in result], dirs, time.perf_counter())
 
     def get_model_previews(self, filepath: str) -> list[str | BytesIO]:
         dirname = os.path.dirname(filepath)
