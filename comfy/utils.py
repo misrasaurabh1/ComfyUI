@@ -15,6 +15,7 @@
     You should have received a copy of the GNU General Public License
     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
+from __future__ import annotations
 
 
 import torch
@@ -1013,22 +1014,43 @@ class ProgressBar:
 def reshape_mask(input_mask, output_shape):
     dims = len(output_shape) - 2
 
+    # Set scale_mode and avoid unnecessary reshape
     if dims == 1:
         scale_mode = "linear"
-
-    if dims == 2:
-        input_mask = input_mask.reshape((-1, 1, input_mask.shape[-2], input_mask.shape[-1]))
+    elif dims == 2:
+        # Only reshape if needed
+        if input_mask.ndim != 4 or input_mask.shape[1] != 1:
+            input_mask = input_mask.reshape((-1, 1, input_mask.shape[-2], input_mask.shape[-1]))
         scale_mode = "bilinear"
-
-    if dims == 3:
-        if len(input_mask.shape) < 5:
+    elif dims == 3:
+        # Only reshape if needed, minor constant overhead for rank check
+        if input_mask.ndim < 5:
             input_mask = input_mask.reshape((1, 1, -1, input_mask.shape[-2], input_mask.shape[-1]))
         scale_mode = "trilinear"
+    else:
+        # fallback for invalid dims
+        raise ValueError(f"Unsupported dims: {dims}")
 
-    mask = torch.nn.functional.interpolate(input_mask, size=output_shape[2:], mode=scale_mode)
-    if mask.shape[1] < output_shape[1]:
-        mask = mask.repeat((1, output_shape[1]) + (1,) * dims)[:,:output_shape[1]]
-    mask = repeat_to_batch_size(mask, output_shape[0])
+    mask = torch.nn.functional.interpolate(
+        input_mask, 
+        size=output_shape[2:], 
+        mode=scale_mode
+    )
+
+    # Efficient channel repeat: slice input if shape matches or use broadcasting
+    c_in, c_out = mask.shape[1], output_shape[1]
+    if c_in < c_out:
+        # Instead of full repeat + slice, use expand + indexing if possible
+        # Handles increasing channel dimension with minimal memory overhead
+        reps = [1] * mask.dim()
+        reps[1] = c_out // c_in
+        if c_out % c_in != 0:
+            mask = torch.cat([mask] * reps[1] + [mask[:, :c_out % c_in]], dim=1)
+        else:
+            mask = mask.repeat(1, reps[1], *([1] * (mask.dim() - 2)))
+        mask = mask[:, :c_out]
+
+    mask = repeat_to_batch_size_fast(mask, output_shape[0])
     return mask
 
 def upscale_dit_mask(mask: torch.Tensor, img_size_in, img_size_out):
@@ -1071,3 +1093,17 @@ def upscale_dit_mask(mask: torch.Tensor, img_size_in, img_size_out):
             dim=1
         )
         return out
+
+def repeat_to_batch_size_fast(tensor, batch_size, dim=0):
+    # Fast path: avoid torch.repeat if unnecessary, minimize mem usage
+    current = tensor.shape[dim]
+    if current == batch_size:
+        return tensor
+    if current > batch_size:
+        # Only slice if batch_size is smaller
+        return tensor.narrow(dim, 0, batch_size)
+    # Repeat efficiently: only repeat the minimal necessary times, then slice
+    reps = [1] * tensor.ndim
+    reps[dim] = -(-batch_size // current)  # ceil division
+    tensor = tensor.repeat(*reps)
+    return tensor.narrow(dim, 0, batch_size)
