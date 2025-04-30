@@ -13,16 +13,22 @@ import numbers
 import re
 
 def gen_empty_tokens(special_tokens, length):
-    start_token = special_tokens.get("start", None)
-    end_token = special_tokens.get("end", None)
+    # Fetch tokens once (local variable access is faster)
+    start_token = special_tokens.get("start")
+    end_token = special_tokens.get("end")
     pad_token = special_tokens.get("pad")
-    output = []
+
+    tokens = []
+    cnt = 0
     if start_token is not None:
-        output.append(start_token)
+        tokens.append(start_token)
+        cnt += 1
     if end_token is not None:
-        output.append(end_token)
-    output += [pad_token] * (length - len(output))
-    return output
+        tokens.append(end_token)
+        cnt += 1
+    if cnt < length:
+        tokens.extend([pad_token] * (length - cnt))
+    return tokens
 
 class ClipTokenWeightEncoder:
     def encode_token_weights(self, token_weight_pairs):
