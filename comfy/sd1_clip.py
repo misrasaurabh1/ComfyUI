@@ -277,51 +277,56 @@ class SDClipModel(torch.nn.Module, ClipTokenWeightEncoder):
         return self.transformer.load_state_dict(sd, strict=False)
 
 def parse_parentheses(string):
+    # Optimization: use a list to build current_item for efficient concatenation
     result = []
-    current_item = ""
+    current_item = []
     nesting_level = 0
     for char in string:
         if char == "(":
             if nesting_level == 0:
                 if current_item:
-                    result.append(current_item)
-                    current_item = "("
+                    result.append(''.join(current_item))
+                    current_item = ['(']
                 else:
-                    current_item = "("
+                    current_item = ['(']
             else:
-                current_item += char
+                current_item.append(char)
             nesting_level += 1
         elif char == ")":
             nesting_level -= 1
             if nesting_level == 0:
-                result.append(current_item + ")")
-                current_item = ""
+                current_item.append(')')
+                result.append(''.join(current_item))
+                current_item = []
             else:
-                current_item += char
+                current_item.append(char)
         else:
-            current_item += char
+            current_item.append(char)
     if current_item:
-        result.append(current_item)
+        result.append(''.join(current_item))
     return result
 
 def token_weights(string, current_weight):
-    a = parse_parentheses(string)
+    # Optimization: use append/extend instead of +=; avoid repeated attribute lookups
+    items = parse_parentheses(string)
     out = []
-    for x in a:
+    for x in items:
         weight = current_weight
         if len(x) >= 2 and x[-1] == ')' and x[0] == '(':
-            x = x[1:-1]
-            xx = x.rfind(":")
+            x_inner = x[1:-1]
+            xx = x_inner.rfind(":")
             weight *= 1.1
             if xx > 0:
+                substr = x_inner[xx+1:]
                 try:
-                    weight = float(x[xx+1:])
-                    x = x[:xx]
-                except:
+                    weight_parsed = float(substr)
+                    weight = weight_parsed
+                    x_inner = x_inner[:xx]
+                except Exception:
                     pass
-            out += token_weights(x, weight)
+            out.extend(token_weights(x_inner, weight))
         else:
-            out += [(x, current_weight)]
+            out.append((x, current_weight))
     return out
 
 def escape_important(text):
