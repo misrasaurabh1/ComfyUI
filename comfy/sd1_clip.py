@@ -607,16 +607,19 @@ class SDTokenizer:
         return {}
 
 class SD1Tokenizer:
-    def __init__(self, embedding_directory=None, tokenizer_data={}, clip_name="l", tokenizer=SDTokenizer, name=None):
+    def __init__(self, embedding_directory=None, tokenizer_data=None, clip_name="l", tokenizer=SDTokenizer, name=None):
+        if tokenizer_data is None:
+            tokenizer_data = {}
         if name is not None:
             self.clip_name = name
-            self.clip = "{}".format(self.clip_name)
+            self.clip = name
         else:
             self.clip_name = clip_name
-            self.clip = "clip_{}".format(self.clip_name)
+            self.clip = f"clip_{self.clip_name}"
 
-        tokenizer = tokenizer_data.get("{}_tokenizer_class".format(self.clip), tokenizer)
-        setattr(self, self.clip, tokenizer(embedding_directory=embedding_directory, tokenizer_data=tokenizer_data))
+        tokenizer_class = tokenizer_data.get(f"{self.clip}_tokenizer_class", tokenizer)
+        self._tokenizer_obj = tokenizer_class(embedding_directory=embedding_directory, tokenizer_data=tokenizer_data)
+        setattr(self, self.clip, self._tokenizer_obj)  # Maintain existing attribute assignment for compatibility
 
     def tokenize_with_weights(self, text:str, return_word_ids=False, **kwargs):
         out = {}
@@ -624,7 +627,8 @@ class SD1Tokenizer:
         return out
 
     def untokenize(self, token_weight_pair):
-        return getattr(self, self.clip).untokenize(token_weight_pair)
+        # Direct attribute access is much faster than getattr
+        return self._tokenizer_obj.untokenize(token_weight_pair)
 
     def state_dict(self):
         return getattr(self, self.clip).state_dict()
