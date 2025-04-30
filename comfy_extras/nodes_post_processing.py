@@ -63,7 +63,11 @@ class Blend:
             raise ValueError(f"Unsupported blend mode: {mode}")
 
     def g(self, x):
-        return torch.where(x <= 0.25, ((16 * x - 12) * x + 4) * x, torch.sqrt(x))
+        mask = x <= 0.25
+        # ((16 * x - 12) * x + 4) * x can be rewritten to avoid multiple multiplications of x
+        x_val = ((16 * x - 12) * x + 4) * x
+        sqrt_val = torch.sqrt(x)
+        return torch.where(mask, x_val, sqrt_val)
 
 def gaussian_kernel(kernel_size: int, sigma: float, device=None):
     x, y = torch.meshgrid(torch.linspace(-1, 1, kernel_size, device=device), torch.linspace(-1, 1, kernel_size, device=device), indexing="ij")
