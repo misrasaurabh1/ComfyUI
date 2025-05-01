@@ -81,25 +81,27 @@ class ModelMergeAuraflow(comfy_extras.nodes_model_merging.ModelMergeBlocks):
 
     @classmethod
     def INPUT_TYPES(s):
-        arg_dict = { "model1": ("MODEL",),
-                              "model2": ("MODEL",)}
-
         argument = ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01})
+        # Use direct dictionary literal for all static keys
+        arg_dict = {
+            "model1": ("MODEL",),
+            "model2": ("MODEL",),
+            "init_x_linear.": argument,
+            "positional_encoding": argument,
+            "cond_seq_linear.": argument,
+            "register_tokens": argument,
+            "t_embedder.": argument,
+            "modF.": argument,
+            "final_linear.": argument,
+        }
 
-        arg_dict["init_x_linear."] = argument
-        arg_dict["positional_encoding"] = argument
-        arg_dict["cond_seq_linear."] = argument
-        arg_dict["register_tokens"] = argument
-        arg_dict["t_embedder."] = argument
-
+        # Build and insert double_layers.* keys with argument value
         for i in range(4):
-            arg_dict["double_layers.{}.".format(i)] = argument
+            arg_dict[f"double_layers.{i}."] = argument
 
+        # Build and insert single_layers.* keys with argument value
         for i in range(32):
-            arg_dict["single_layers.{}.".format(i)] = argument
-
-        arg_dict["modF."] = argument
-        arg_dict["final_linear."] = argument
+            arg_dict[f"single_layers.{i}."] = argument
 
         return {"required": arg_dict}
 
