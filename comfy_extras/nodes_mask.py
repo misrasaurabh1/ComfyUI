@@ -70,17 +70,23 @@ class LatentCompositeMasked:
 class ImageCompositeMasked:
     @classmethod
     def INPUT_TYPES(s):
+        # Use local variables to reduce attribute lookup and dict creation overhead
+        max_res = MAX_RESOLUTION
+        common_int = ("INT", {"default": 0, "min": 0, "max": max_res, "step": 1})
+
+        required = {
+            "destination": ("IMAGE",),
+            "source": ("IMAGE",),
+            "x": common_int,
+            "y": common_int,
+            "resize_source": ("BOOLEAN", {"default": False}),
+        }
+        optional = {
+            "mask": ("MASK",)
+        }
         return {
-            "required": {
-                "destination": ("IMAGE",),
-                "source": ("IMAGE",),
-                "x": ("INT", {"default": 0, "min": 0, "max": MAX_RESOLUTION, "step": 1}),
-                "y": ("INT", {"default": 0, "min": 0, "max": MAX_RESOLUTION, "step": 1}),
-                "resize_source": ("BOOLEAN", {"default": False}),
-            },
-            "optional": {
-                "mask": ("MASK",),
-            }
+            "required": required,
+            "optional": optional,
         }
     RETURN_TYPES = ("IMAGE",)
     FUNCTION = "composite"
