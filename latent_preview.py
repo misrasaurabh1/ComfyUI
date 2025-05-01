@@ -6,18 +6,21 @@ import comfy.model_management
 import folder_paths
 import comfy.utils
 import logging
+from comfy.model_management import device_supports_non_blocking, directml_enabled
 
 MAX_PREVIEW_RESOLUTION = args.preview_size
 
 def preview_to_image(latent_image):
-        latents_ubyte = (((latent_image + 1.0) / 2.0).clamp(0, 1)  # change scale from -1..1 to 0..1
-                            .mul(0xFF)  # to 0..255
-                            )
-        if comfy.model_management.directml_enabled:
-                latents_ubyte = latents_ubyte.to(dtype=torch.uint8)
-        latents_ubyte = latents_ubyte.to(device="cpu", dtype=torch.uint8, non_blocking=comfy.model_management.device_supports_non_blocking(latent_image.device))
-
-        return Image.fromarray(latents_ubyte.numpy())
+        latents = ((latent_image + 1.0) / 2.0).clamp(0, 1)
+        latents = latents.mul(0xFF)
+        # If running on directml, ensure dtype is uint8 before moving to cpu
+        if directml_enabled:
+                latents = latents.to(dtype=torch.uint8)
+                non_block = False
+        else:
+                non_block = device_supports_non_blocking(latent_image.device)
+        latents = latents.to(device="cpu", dtype=torch.uint8, non_blocking=non_block)
+        return Image.fromarray(latents.numpy())
 
 class LatentPreviewer:
     def decode_latent_to_preview(self, x0):
