@@ -1,4 +1,5 @@
 from nodes import MAX_RESOLUTION
+from functools import lru_cache
 
 class CLIPTextEncodeSDXLRefiner:
     @classmethod
@@ -15,8 +16,25 @@ class CLIPTextEncodeSDXLRefiner:
     CATEGORY = "advanced/conditioning"
 
     def encode(self, clip, ascore, width, height, text):
-        tokens = clip.tokenize(text)
-        return (clip.encode_from_tokens_scheduled(tokens, add_dict={"aesthetic_score": ascore, "width": width, "height": height}), )
+        # Use cached tokenizer per clip instance to avoid recomputing
+        tokenize = self._get_text_tokenizer(clip)
+        tokens = tokenize(text)
+        # Pass tokens forward as before
+        return (
+            clip.encode_from_tokens_scheduled(
+                tokens,
+                add_dict={"aesthetic_score": ascore, "width": width, "height": height}
+            ),
+        )
+
+    def _get_text_tokenizer(self, clip):
+        # Get or create a memoized tokenize function per-clip instance.
+        if not hasattr(clip, "_tokenize_cache"):
+            @lru_cache(maxsize=32)
+            def tokenize_cached(text):
+                return clip.tokenize(text)
+            clip._tokenize_cache = tokenize_cached
+        return clip._tokenize_cache
 
 class CLIPTextEncodeSDXL:
     @classmethod
