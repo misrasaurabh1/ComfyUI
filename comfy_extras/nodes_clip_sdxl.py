@@ -21,17 +21,22 @@ class CLIPTextEncodeSDXLRefiner:
 class CLIPTextEncodeSDXL:
     @classmethod
     def INPUT_TYPES(s):
+        max_res = MAX_RESOLUTION
+        int_default_1024 = {"default": 1024.0, "min": 0, "max": max_res}
+        int_zero = {"default": 0, "min": 0, "max": max_res}
+        str_g_l = {"multiline": True, "dynamicPrompts": True}
+
         return {"required": {
             "clip": ("CLIP", ),
-            "width": ("INT", {"default": 1024.0, "min": 0, "max": MAX_RESOLUTION}),
-            "height": ("INT", {"default": 1024.0, "min": 0, "max": MAX_RESOLUTION}),
-            "crop_w": ("INT", {"default": 0, "min": 0, "max": MAX_RESOLUTION}),
-            "crop_h": ("INT", {"default": 0, "min": 0, "max": MAX_RESOLUTION}),
-            "target_width": ("INT", {"default": 1024.0, "min": 0, "max": MAX_RESOLUTION}),
-            "target_height": ("INT", {"default": 1024.0, "min": 0, "max": MAX_RESOLUTION}),
-            "text_g": ("STRING", {"multiline": True, "dynamicPrompts": True}),
-            "text_l": ("STRING", {"multiline": True, "dynamicPrompts": True}),
-            }}
+            "width":   ("INT", int_default_1024),
+            "height":  ("INT", int_default_1024),
+            "crop_w":  ("INT", int_zero),
+            "crop_h":  ("INT", int_zero),
+            "target_width":  ("INT", int_default_1024),
+            "target_height": ("INT", int_default_1024),
+            "text_g": ("STRING", str_g_l),
+            "text_l": ("STRING", str_g_l),
+        }}
     RETURN_TYPES = ("CONDITIONING",)
     FUNCTION = "encode"
 
