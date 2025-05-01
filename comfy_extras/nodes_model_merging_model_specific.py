@@ -250,20 +250,22 @@ class ModelMergeWAN2_1(comfy_extras.nodes_model_merging.ModelMergeBlocks):
 
     @classmethod
     def INPUT_TYPES(s):
-        arg_dict = { "model1": ("MODEL",),
-                              "model2": ("MODEL",)}
-
+        # Pre-create the FLOAT argument dictionary once
         argument = ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01})
 
-        arg_dict["patch_embedding."] = argument
-        arg_dict["time_embedding."] = argument
-        arg_dict["time_projection."] = argument
-        arg_dict["text_embedding."] = argument
-        arg_dict["img_emb."] = argument
+        # Start with required non-block arguments
+        arg_dict = {
+            "model1": ("MODEL",),
+            "model2": ("MODEL",),
+            "patch_embedding.": argument,
+            "time_embedding.": argument,
+            "time_projection.": argument,
+            "text_embedding.": argument,
+            "img_emb.": argument,
+        }
 
-        for i in range(40):
-            arg_dict["blocks.{}.".format(i)] = argument
-
+        # Use a dict comprehension for blocks and avoid calling .format in every iteration
+        arg_dict.update({f"blocks.{i}.": argument for i in range(40)})
         arg_dict["head."] = argument
 
         return {"required": arg_dict}
