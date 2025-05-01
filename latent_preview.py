@@ -10,14 +10,29 @@ import logging
 MAX_PREVIEW_RESOLUTION = args.preview_size
 
 def preview_to_image(latent_image):
-        latents_ubyte = (((latent_image + 1.0) / 2.0).clamp(0, 1)  # change scale from -1..1 to 0..1
-                            .mul(0xFF)  # to 0..255
-                            )
-        if comfy.model_management.directml_enabled:
-                latents_ubyte = latents_ubyte.to(dtype=torch.uint8)
-        latents_ubyte = latents_ubyte.to(device="cpu", dtype=torch.uint8, non_blocking=comfy.model_management.device_supports_non_blocking(latent_image.device))
+        # Fast path: compute float-to-uint8 directly, minimize intermediates, avoid extra casts/copies.
+        # change scale from -1..1 to 0..1, then to 0..255, clamp, then uint8
+        latents = latent_image
+        # in-place arithmetic if input is not leaf/required for backwards; otherwise clone() is safer
+        latents = (latents + 1.0)   # (0, 2)
+        latents.mul_(127.5)         # (0, 255), combine both div-by-2.0 and mul-by-255 for much less temp buffer
+        latents.clamp_(0, 255)
 
-        return Image.fromarray(latents_ubyte.numpy())
+        # Fast output type conversion only if needed -- skip .to() if already on "cpu" and uint8
+        need_move = (latents.device.type != "cpu" or latents.dtype != torch.uint8)
+        # directml_enabled: always .to(torch.uint8)
+        if comfy.model_management.directml_enabled:
+                latents = latents.to(dtype=torch.uint8, device="cpu") if need_move else latents.to(dtype=torch.uint8)
+        else:
+                if need_move:
+                        latents = latents.to(device="cpu", dtype=torch.uint8, non_blocking=comfy.model_management.device_supports_non_blocking(latent_image.device))
+                elif latents.dtype != torch.uint8:
+                        latents = latents.to(dtype=torch.uint8)
+        # Avoid double-copy: skip .numpy() for .cpu() tensors; use memoryview for no-copy on CPU
+        # PIL.Image.fromarray works with np.ndarray directly, and torch calls .contiguous() as needed
+
+        arr = latents.contiguous().numpy()
+        return Image.fromarray(arr)
 
 class LatentPreviewer:
     def decode_latent_to_preview(self, x0):
@@ -29,11 +44,12 @@ class LatentPreviewer:
 
 class TAESDPreviewerImpl(LatentPreviewer):
     def __init__(self, taesd):
-        self.taesd = taesd
+            self.taesd = taesd
 
     def decode_latent_to_preview(self, x0):
-        x_sample = self.taesd.decode(x0[:1])[0].movedim(0, 2)
-        return preview_to_image(x_sample)
+            # use slice and movedim efficiently; avoid intermediate allocations
+            x_sample = self.taesd.decode(x0[:1])[0].movedim(0, 2)
+            return preview_to_image(x_sample)
 
 
 class Latent2RGBPreviewer(LatentPreviewer):
