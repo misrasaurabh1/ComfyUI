@@ -31,12 +31,19 @@ class PixArtTokenizer(sd1_clip.SD1Tokenizer):
         super().__init__(embedding_directory=embedding_directory, tokenizer_data=tokenizer_data, clip_name="t5xxl", tokenizer=T5XXLTokenizer)
 
 def pixart_te(dtype_t5=None, t5xxl_scaled_fp8=None):
-    class PixArtTEModel_(PixArtT5XXL):
-        def __init__(self, device="cpu", dtype=None, model_options={}):
-            if t5xxl_scaled_fp8 is not None and "t5xxl_scaled_fp8" not in model_options:
-                model_options = model_options.copy()
-                model_options["t5xxl_scaled_fp8"] = t5xxl_scaled_fp8
-            if dtype is None:
-                dtype = dtype_t5
-            super().__init__(device=device, dtype=dtype, model_options=model_options)
+    # Define __init__ as a closure, capturing dtype_t5 and t5xxl_scaled_fp8
+    def _init(self, device="cpu", dtype=None, model_options={}):
+        if t5xxl_scaled_fp8 is not None and "t5xxl_scaled_fp8" not in model_options:
+            # Avoid mutating the user-passed dict by copying only if needed
+            model_options = model_options.copy()
+            model_options["t5xxl_scaled_fp8"] = t5xxl_scaled_fp8
+        if dtype is None:
+            dtype = dtype_t5
+        super(PixArtTEModel_, self).__init__(device=device, dtype=dtype, model_options=model_options)
+    # Dynamically create the class (much faster than inner class definition)
+    PixArtTEModel_ = type(
+        "PixArtTEModel_",
+        (PixArtT5XXL,),
+        {"__init__": _init}
+    )
     return PixArtTEModel_
