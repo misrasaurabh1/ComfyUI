@@ -27,16 +27,18 @@ class SetUnionControlNetType:
 class ControlNetInpaintingAliMamaApply(nodes.ControlNetApplyAdvanced):
     @classmethod
     def INPUT_TYPES(s):
-        return {"required": {"positive": ("CONDITIONING", ),
-                             "negative": ("CONDITIONING", ),
-                             "control_net": ("CONTROL_NET", ),
-                             "vae": ("VAE", ),
-                             "image": ("IMAGE", ),
-                             "mask": ("MASK", ),
-                             "strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 10.0, "step": 0.01}),
-                             "start_percent": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.001}),
-                             "end_percent": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.001})
-                             }}
+        req = {
+            "positive": ("CONDITIONING",),
+            "negative": ("CONDITIONING",),
+            "control_net": ("CONTROL_NET",),
+            "vae": ("VAE",),
+            "image": ("IMAGE",),
+            "mask": ("MASK",),
+            "strength": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 10.0, "step": 0.01}),
+            "start_percent": ("FLOAT", {"default": 0.0, "min": 0.0, "max": 1.0, "step": 0.001}),
+            "end_percent": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.001}),
+        }
+        return {"required": req}
 
     FUNCTION = "apply_inpaint_controlnet"
 
