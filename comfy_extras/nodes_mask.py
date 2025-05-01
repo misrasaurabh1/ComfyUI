@@ -7,37 +7,64 @@ import node_helpers
 from nodes import MAX_RESOLUTION
 
 def composite(destination, source, x, y, mask = None, multiplier = 8, resize_source = False):
-    source = source.to(destination.device)
+    device = destination.device
+    # Avoid unnecessary to() call if already correct device
+    if source.device != device:
+        source = source.to(device)
     if resize_source:
-        source = torch.nn.functional.interpolate(source, size=(destination.shape[2], destination.shape[3]), mode="bilinear")
+        source = torch.nn.functional.interpolate(source, size=destination.shape[2:4], mode="bilinear")
 
     source = comfy.utils.repeat_to_batch_size(source, destination.shape[0])
 
-    x = max(-source.shape[3] * multiplier, min(x, destination.shape[3] * multiplier))
-    y = max(-source.shape[2] * multiplier, min(y, destination.shape[2] * multiplier))
+    # Clamp x/y to within the multiplier boundaries
+    max_x, max_y = destination.shape[3] * multiplier, destination.shape[2] * multiplier
+    min_x, min_y = -source.shape[3] * multiplier, -source.shape[2] * multiplier
+    x = max(min_x, min(x, max_x))
+    y = max(min_y, min(y, max_y))
 
-    left, top = (x // multiplier, y // multiplier)
-    right, bottom = (left + source.shape[3], top + source.shape[2],)
+    left, top = x // multiplier, y // multiplier
+    right, bottom = left + source.shape[3], top + source.shape[2]
 
+    # Optimized mask handling
     if mask is None:
-        mask = torch.ones_like(source)
+        # Only create the mask for the visible region directly, saves memory
+        batch, ch, h, w = source.shape
+        # bounds for the visible region in destination
+        visible_width = max(0, min(destination.shape[3] - left + min(0, x), source.shape[3]))
+        visible_height = max(0, min(destination.shape[2] - top + min(0, y), source.shape[2]))
+        # Prepare indices in advance
+        # Compose mask/sources onsite, do it as one op below for performance
+        # Short-circuit the all-ones mask
+        mask = 1.0
     else:
-        mask = mask.to(destination.device, copy=True)
-        mask = torch.nn.functional.interpolate(mask.reshape((-1, 1, mask.shape[-2], mask.shape[-1])), size=(source.shape[2], source.shape[3]), mode="bilinear")
+        # Only transfer mask to destination device if needed
+        if mask.device != device or not mask.is_contiguous():
+            mask = mask.to(device).contiguous()
+        # Interpolate mask if not the right shape
+        if mask.shape[-2:] != source.shape[-2:]:
+            mask = torch.nn.functional.interpolate(
+                mask.reshape(-1, 1, mask.shape[-2], mask.shape[-1]),
+                size=source.shape[-2:],
+                mode="bilinear",
+            )
         mask = comfy.utils.repeat_to_batch_size(mask, source.shape[0])
+        # bounds for the visible region in destination
+        visible_width = max(0, min(destination.shape[3] - left + min(0, x), source.shape[3]))
+        visible_height = max(0, min(destination.shape[2] - top + min(0, y), source.shape[2]))
+        mask = mask[:, :, :visible_height, :visible_width]
+    
+    # These slices are likely to be correct even if mask==1.0, so set them now
+    src_slice = source[:, :, :visible_height, :visible_width]
+    dest_slice = destination[:, :, top:bottom, left:right][:, :, :visible_height, :visible_width]
 
-    # calculate the bounds of the source that will be overlapping the destination
-    # this prevents the source trying to overwrite latent pixels that are out of bounds
-    # of the destination
-    visible_width, visible_height = (destination.shape[3] - left + min(0, x), destination.shape[2] - top + min(0, y),)
+    if mask is 1.0:
+        # Fastest path: mask is all 1, just overwrite destination in visible region
+        destination[:, :, top:bottom, left:right][:, :, :visible_height, :visible_width] = src_slice
+    else:
+        # Compute the composite only on the visible region
+        destination[:, :, top:bottom, left:right][:, :, :visible_height, :visible_width] = \
+            mask * src_slice + (1 - mask) * dest_slice
 
-    mask = mask[:, :, :visible_height, :visible_width]
-    inverse_mask = torch.ones_like(mask) - mask
-
-    source_portion = mask * source[:, :, :visible_height, :visible_width]
-    destination_portion = inverse_mask  * destination[:, :, top:bottom, left:right]
-
-    destination[:, :, top:bottom, left:right] = source_portion + destination_portion
     return destination
 
 class LatentCompositeMasked:
