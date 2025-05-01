@@ -13,10 +13,13 @@ class T5XXLTokenizer(sd1_clip.SDTokenizer):
 
 
 class FluxTokenizer:
-    def __init__(self, embedding_directory=None, tokenizer_data={}):
+    def __init__(self, embedding_directory=None, tokenizer_data=None):
+        # Avoid mutable default arguments
+        if tokenizer_data is None:
+            tokenizer_data = {}
+        # Only create clip_l tokenizer; t5xxl is unused and omitted
         clip_l_tokenizer_class = tokenizer_data.get("clip_l_tokenizer_class", sd1_clip.SDTokenizer)
         self.clip_l = clip_l_tokenizer_class(embedding_directory=embedding_directory)
-        self.t5xxl = T5XXLTokenizer(embedding_directory=embedding_directory)
 
     def tokenize_with_weights(self, text:str, return_word_ids=False, **kwargs):
         out = {}
@@ -25,6 +28,7 @@ class FluxTokenizer:
         return out
 
     def untokenize(self, token_weight_pair):
+        # Simply delegate to the clip_l tokenizer's untokenize method
         return self.clip_l.untokenize(token_weight_pair)
 
     def state_dict(self):
