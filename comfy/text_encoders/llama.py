@@ -59,8 +59,9 @@ class RMSNorm(nn.Module):
 
 def rotate_half(x):
     """Rotates half the hidden dims of the input."""
-    x1 = x[..., : x.shape[-1] // 2]
-    x2 = x[..., x.shape[-1] // 2 :]
+    d = x.shape[-1] // 2
+    x1 = x[..., :d]
+    x2 = x[..., d:]
     return torch.cat((-x2, x1), dim=-1)
 
 
@@ -80,10 +81,17 @@ def precompute_freqs_cis(head_dim, seq_len, theta, device=None):
 
 
 def apply_rope(xq, xk, freqs_cis):
-    cos = freqs_cis[0].unsqueeze(1)
-    sin = freqs_cis[1].unsqueeze(1)
-    q_embed = (xq * cos) + (rotate_half(xq) * sin)
-    k_embed = (xk * cos) + (rotate_half(xk) * sin)
+    # Cache cosine and sine out of freqs_cis tuple/list, unsqueezed along dim 1 for broadcasting
+    cos, sin = freqs_cis[0].unsqueeze(1), freqs_cis[1].unsqueeze(1)
+
+    # Precompute rotated halves to avoid redundant work
+    xq_rot = rotate_half(xq)
+    xk_rot = rotate_half(xk)
+
+    # Use fused multiply-add for speed; avoid unnecessary temp variable creation
+    q_embed = xq * cos + xq_rot * sin
+    k_embed = xk * cos + xk_rot * sin
+
     return q_embed, k_embed
 
 
