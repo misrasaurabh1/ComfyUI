@@ -10,13 +10,19 @@ import logging
 MAX_PREVIEW_RESOLUTION = args.preview_size
 
 def preview_to_image(latent_image):
-        latents_ubyte = (((latent_image + 1.0) / 2.0).clamp(0, 1)  # change scale from -1..1 to 0..1
-                            .mul(0xFF)  # to 0..255
-                            )
+        # change scale from -1..1 to 0..1, then to 0..255
+        latents_ubyte = ((latent_image + 1.0) / 2.0).clamp_(0, 1).mul_(0xFF)
+        # Only .to(dtype=torch.uint8) if not already uint8
         if comfy.model_management.directml_enabled:
-                latents_ubyte = latents_ubyte.to(dtype=torch.uint8)
-        latents_ubyte = latents_ubyte.to(device="cpu", dtype=torch.uint8, non_blocking=comfy.model_management.device_supports_non_blocking(latent_image.device))
-
+                if latents_ubyte.dtype != torch.uint8:
+                        latents_ubyte = latents_ubyte.to(dtype=torch.uint8)
+        # Only .to(device="cpu", dtype=torch.uint8) if not already
+        nb = comfy.model_management.device_supports_non_blocking(latent_image.device)
+        if not (latents_ubyte.device.type == 'cpu' and latents_ubyte.dtype == torch.uint8):
+                latents_ubyte = latents_ubyte.to(device="cpu", dtype=torch.uint8, non_blocking=nb)
+        # Expect contiguous for numpy
+        if not latents_ubyte.is_contiguous():
+                latents_ubyte = latents_ubyte.contiguous()
         return Image.fromarray(latents_ubyte.numpy())
 
 class LatentPreviewer:
@@ -38,25 +44,39 @@ class TAESDPreviewerImpl(LatentPreviewer):
 
 class Latent2RGBPreviewer(LatentPreviewer):
     def __init__(self, latent_rgb_factors, latent_rgb_factors_bias=None):
-        self.latent_rgb_factors = torch.tensor(latent_rgb_factors, device="cpu").transpose(0, 1)
-        self.latent_rgb_factors_bias = None
-        if latent_rgb_factors_bias is not None:
-            self.latent_rgb_factors_bias = torch.tensor(latent_rgb_factors_bias, device="cpu")
+            t_factors = torch.tensor(latent_rgb_factors, device="cpu")
+            self.latent_rgb_factors_cpu = t_factors.transpose(0, 1).contiguous()
+            self.latent_rgb_factors = self.latent_rgb_factors_cpu  # always keep a CPU ref for fast move
+            self.latent_rgb_factors_bias_cpu = None
+            self.latent_rgb_factors_bias = None
+            if latent_rgb_factors_bias is not None:
+                    t_bias = torch.tensor(latent_rgb_factors_bias, device="cpu")
+                    self.latent_rgb_factors_bias_cpu = t_bias
+                    self.latent_rgb_factors_bias = t_bias
 
     def decode_latent_to_preview(self, x0):
-        self.latent_rgb_factors = self.latent_rgb_factors.to(dtype=x0.dtype, device=x0.device)
-        if self.latent_rgb_factors_bias is not None:
-            self.latent_rgb_factors_bias = self.latent_rgb_factors_bias.to(dtype=x0.dtype, device=x0.device)
+            # Move factors & bias to x0's dtype/device, only if needed
+            if (self.latent_rgb_factors.device != x0.device or 
+                self.latent_rgb_factors.dtype != x0.dtype):
+                    self.latent_rgb_factors = self.latent_rgb_factors_cpu.to(dtype=x0.dtype, device=x0.device)
+            if self.latent_rgb_factors_bias_cpu is not None:
+                    if (self.latent_rgb_factors_bias is None or 
+                        self.latent_rgb_factors_bias.device != x0.device or 
+                        self.latent_rgb_factors_bias.dtype != x0.dtype):
+                            self.latent_rgb_factors_bias = self.latent_rgb_factors_bias_cpu.to(dtype=x0.dtype, device=x0.device)
 
-        if x0.ndim == 5:
-            x0 = x0[0, :, 0]
-        else:
-            x0 = x0[0]
-
-        latent_image = torch.nn.functional.linear(x0.movedim(0, -1), self.latent_rgb_factors, bias=self.latent_rgb_factors_bias)
-        # latent_image = x0[0].permute(1, 2, 0) @ self.latent_rgb_factors
-
-        return preview_to_image(latent_image)
+            # Fast axis selection
+            if x0.ndim == 5:
+                    x0_mat = x0[0, :, 0]
+            else:
+                    x0_mat = x0[0]
+            # Linear RGB mapping, fast path
+            latent_image = torch.nn.functional.linear(
+                x0_mat.movedim(0, -1), 
+                self.latent_rgb_factors, 
+                bias=self.latent_rgb_factors_bias
+            )
+            return preview_to_image(latent_image)
 
 
 def get_previewer(device, latent_format):
