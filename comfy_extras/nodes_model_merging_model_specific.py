@@ -108,25 +108,30 @@ class ModelMergeFlux1(comfy_extras.nodes_model_merging.ModelMergeBlocks):
 
     @classmethod
     def INPUT_TYPES(s):
-        arg_dict = { "model1": ("MODEL",),
-                              "model2": ("MODEL",)}
-
+        # Use a local var for arg_dict for faster `.get`/set
         argument = ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01})
+        arg_dict = {
+            "model1": ("MODEL",),
+            "model2": ("MODEL",),
+            "img_in.": argument,
+            "time_in.": argument,
+            "guidance_in": argument,
+            "vector_in.": argument,
+            "txt_in.": argument,
+        }
 
-        arg_dict["img_in."] = argument
-        arg_dict["time_in."] = argument
-        arg_dict["guidance_in"] = argument
-        arg_dict["vector_in."] = argument
-        arg_dict["txt_in."] = argument
-
+        # Use for-loops with string concatenation, which is consistently faster for simple cases.
+        double_prefix = "double_blocks."
         for i in range(19):
-            arg_dict["double_blocks.{}.".format(i)] = argument
+            arg_dict[double_prefix + str(i) + "."] = argument
 
+        single_prefix = "single_blocks."
         for i in range(38):
-            arg_dict["single_blocks.{}.".format(i)] = argument
+            arg_dict[single_prefix + str(i) + "."] = argument
 
         arg_dict["final_layer."] = argument
 
+        # Return remains unchanged
         return {"required": arg_dict}
 
 class ModelMergeSD35_Large(comfy_extras.nodes_model_merging.ModelMergeBlocks):
