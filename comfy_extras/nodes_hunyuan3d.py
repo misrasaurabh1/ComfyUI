@@ -65,12 +65,19 @@ class Hunyuan3Dv2ConditioningMultiView:
         all_embeds = [front, left, back, right]
         out = []
         pos_embeds = None
+        # Find first non-None, prepare position embedding cache key
         for i, e in enumerate(all_embeds):
             if e is not None:
                 if pos_embeds is None:
-                    pos_embeds = get_1d_sincos_pos_embed_from_grid_torch(e.last_hidden_state.shape[-1], torch.arange(4))
+                    hidden_dim = e.last_hidden_state.shape[-1]
+                    dev = e.last_hidden_state.device
+                    dtype = e.last_hidden_state.dtype
+                    # Use cached arange for device/dtype
+                    pos_tensor = get_cached_arange4(dev, dtype)
+                    pos_embeds = get_1d_sincos_pos_embed_from_grid_torch(
+                        hidden_dim, pos_tensor, device=dev, dtype=dtype
+                    )
                 out.append(e.last_hidden_state + pos_embeds[i].reshape(1, 1, -1))
-
         embeds = torch.cat(out, dim=1)
         positive = [[embeds, {}]]
         negative = [[torch.zeros_like(embeds), {}]]
@@ -583,6 +590,24 @@ def save_glb(vertices, faces, filepath, metadata=None):
         f.write(buffer_data)
 
     return filepath
+
+
+# Helper: create arange(4) tensor for a given device/dtype, to avoid allocating it every time
+def get_cached_arange4(device, dtype):
+    # lru_cache does not work with torch devices, so we just handle manually
+    key = (str(device), str(dtype))
+    if not hasattr(get_cached_arange4, 'cache'):
+        get_cached_arange4.cache = {}
+    cache = get_cached_arange4.cache
+    if key not in cache:
+        cache[key] = torch.arange(4, device=device, dtype=dtype)
+    return cache[key]
+
+# Helper: cache position embeddings for all reasonable parameter combinations
+def get_positional_encoding_cache():
+    if not hasattr(get_positional_encoding_cache, 'cache'):
+        get_positional_encoding_cache.cache = {}
+    return get_positional_encoding_cache.cache
 
 
 class SaveGLB:
