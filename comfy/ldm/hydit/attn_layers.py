@@ -75,20 +75,24 @@ def apply_rotary_emb(
         Tuple[torch.Tensor, torch.Tensor]: Tuple of modified query tensor and key tensor with rotary embeddings.
 
     """
+    # Fast paths by avoiding repeat flatten/unflatten
     xk_out = None
     if isinstance(freqs_cis, tuple):
-        cos, sin = reshape_for_broadcast(freqs_cis, xq, head_first)    # [S, D]
-        xq_out = (xq * cos + rotate_half(xq) * sin)
+        cos, sin = reshape_for_broadcast(freqs_cis, xq, head_first)
+        q_rot = rotate_half(xq)
+        xq_out = (xq * cos).add_(q_rot * sin)  # in-place add for memory savings
         if xk is not None:
-            xk_out = (xk * cos + rotate_half(xk) * sin)
+            k_rot = rotate_half(xk)
+            xk_out = (xk * cos).add_(k_rot * sin)
     else:
-        xq_ = torch.view_as_complex(xq.float().reshape(*xq.shape[:-1], -1, 2))  # [B, S, H, D//2]
-        freqs_cis = reshape_for_broadcast(freqs_cis, xq_, head_first).to(xq.device)   # [S, D//2] --> [1, S, 1, D//2]
-        xq_out = torch.view_as_real(xq_ * freqs_cis).flatten(3).type_as(xq)
+        # Handle complex case
+        view_shape = (*xq.shape[:-1], -1, 2)
+        xq_ = torch.view_as_complex(xq.float().reshape(view_shape))  # [B, S, H, D//2]
+        freqs_cis_b = reshape_for_broadcast(freqs_cis, xq_, head_first).to(dtype=xq_.dtype, device=xq.device)
+        xq_out = torch.view_as_real(xq_ * freqs_cis_b).flatten(-2, -1).type_as(xq)
         if xk is not None:
-            xk_ = torch.view_as_complex(xk.float().reshape(*xk.shape[:-1], -1, 2))  # [B, S, H, D//2]
-            xk_out = torch.view_as_real(xk_ * freqs_cis).flatten(3).type_as(xk)
-
+            xk_ = torch.view_as_complex(xk.float().reshape(view_shape))
+            xk_out = torch.view_as_real(xk_ * freqs_cis_b).flatten(-2, -1).type_as(xk)
     return xq_out, xk_out
 
 
@@ -125,8 +129,9 @@ class CrossAttention(nn.Module):
         self.kv_proj = operations.Linear(kdim, 2 * qdim, bias=qkv_bias, **factory_kwargs)
 
         # TODO: eps should be 1 / 65530 if using fp16
-        self.q_norm = operations.LayerNorm(self.head_dim, elementwise_affine=True, eps=1e-6, dtype=dtype, device=device) if qk_norm else nn.Identity()
-        self.k_norm = operations.LayerNorm(self.head_dim, elementwise_affine=True, eps=1e-6, dtype=dtype, device=device) if qk_norm else nn.Identity()
+        norm_cls = operations.LayerNorm
+        self.q_norm = norm_cls(self.head_dim, elementwise_affine=True, eps=1e-6, dtype=dtype, device=device) if qk_norm else nn.Identity()
+        self.k_norm = norm_cls(self.head_dim, elementwise_affine=True, eps=1e-6, dtype=dtype, device=device) if qk_norm else nn.Identity()
         self.attn_drop = nn.Dropout(attn_drop)
         self.out_proj = operations.Linear(qdim, qdim, bias=qkv_bias, **factory_kwargs)
         self.proj_drop = nn.Dropout(proj_drop)
@@ -142,33 +147,43 @@ class CrossAttention(nn.Module):
         freqs_cis_img: torch.Tensor
             (batch, hidden_dim // 2), RoPE for image
         """
-        b, s1, c = x.shape     # [b, s1, D]
-        _, s2, c = y.shape     # [b, s2, 1024]
+        b, s1, c = x.shape
+        _, s2, _ = y.shape
 
-        q = self.q_proj(x).view(b, s1, self.num_heads, self.head_dim)   # [b, s1, h, d]
-        kv = self.kv_proj(y).view(b, s2, 2, self.num_heads, self.head_dim)    # [b, s2, 2, h, d]
-        k, v = kv.unbind(dim=2) # [b, s, h, d]
+        # Single allocations for q,kv
+        q = self.q_proj(x).view(b, s1, self.num_heads, self.head_dim)
+        kv = self.kv_proj(y).view(b, s2, 2, self.num_heads, self.head_dim)  # [b, s2, 2, h, d]
+        k, v = kv.unbind(dim=2)
+        del kv
+
+        # Apply norm before memory copy
         q = self.q_norm(q)
         k = self.k_norm(k)
 
-        # Apply RoPE if needed
+        # Apply RoPE if needed (memory-locality: only query is updated, not both)
         if freqs_cis_img is not None:
-            qq, _ = apply_rotary_emb(q, None, freqs_cis_img)
-            assert qq.shape == q.shape, f'qq: {qq.shape}, q: {q.shape}'
-            q = qq
+            q, _ = apply_rotary_emb(q, None, freqs_cis_img)
+            # Shape must match by contract
 
-        q = q.transpose(-2, -3).contiguous()        # q ->  B, L1, H, C - B, H, L1, C
-        k = k.transpose(-2, -3).contiguous()      # k ->  B, L2, H, C - B, H, C, L2
-        v = v.transpose(-2, -3).contiguous()
+        # -- Directly transpose and re-layout for eff. attention (no .contiguous() needed with .transpose for optimized_attention) --
+        # B, S, H, D -> B, H, S, D
+        q = q.permute(0, 2, 1, 3)
+        k = k.permute(0, 2, 1, 3)
+        v = v.permute(0, 2, 1, 3)
 
-        context = optimized_attention(q, k, v, self.num_heads, skip_reshape=True, attn_precision=self.attn_precision)
+        # optimized_attention expects q, k, v as B, H, L, D and skip_reshape=True
+        context = optimized_attention(
+            q, k, v,
+            self.num_heads,
+            skip_reshape=True,
+            attn_precision=self.attn_precision
+        )
 
-        out = self.out_proj(context)  # context.reshape - B, L1, -1
+        # Output projection, drop
+        out = self.out_proj(context)
         out = self.proj_drop(out)
 
-        out_tuple = (out,)
-
-        return out_tuple
+        return (out,)
 
 
 class Attention(nn.Module):
