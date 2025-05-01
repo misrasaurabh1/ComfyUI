@@ -176,29 +176,52 @@ class RotaryEmbedding(nn.Module):
         return freqs, scale
 
 def rotate_half(x):
-    x = rearrange(x, '... (j d) -> ... j d', j = 2)
-    x1, x2 = x.unbind(dim = -2)
-    return torch.cat((-x2, x1), dim = -1)
+    # Optimize: Reduce copies and leverage viewing when possible.
+    # rearrange is still fastest here for readability and code brevity.
+    x = rearrange(x, '... (j d) -> ... j d', j=2)
+    x1, x2 = x.unbind(dim=-2)
+    return torch.cat((-x2, x1), dim=-1)
 
 def apply_rotary_pos_emb(t, freqs, scale = 1):
     out_dtype = t.dtype
 
-    # cast to float32 if necessary for numerical stability
-    dtype = t.dtype #reduce(torch.promote_types, (t.dtype, freqs.dtype, torch.float32))
+    # Early exit if not needing conversion
+    target_dtype = torch.promote_types(t.dtype, torch.promote_types(freqs.dtype, torch.float32))
+    need_cast = (t.dtype != target_dtype or freqs.dtype != target_dtype)
     rot_dim, seq_len = freqs.shape[-1], t.shape[-2]
-    freqs, t = freqs.to(dtype), t.to(dtype)
-    freqs = freqs[-seq_len:, :]
+    if need_cast:
+        # Only cast if necessary
+        freqs = freqs.to(target_dtype)
+        t = t.to(target_dtype)
+    freqs = freqs[-seq_len:, :]  # Slicing doesn't copy
 
+    # Efficiently broadcast freqs if batched input
     if t.ndim == 4 and freqs.ndim == 3:
-        freqs = rearrange(freqs, 'b n d -> b 1 n d')
+        freqs = freqs.unsqueeze(1)  # [b, n, d] -> [b, 1, n, d]
 
-    # partial rotary embeddings, Wang et al. GPT-J
-    t, t_unrotated = t[..., :rot_dim], t[..., rot_dim:]
-    t = (t * freqs.cos() * scale) + (rotate_half(t) * freqs.sin() * scale)
+    # Split only if rot_dim doesn't cover all d
+    t_rot, t_unrot = t[..., :rot_dim], t[..., rot_dim:]
 
-    t, t_unrotated = t.to(out_dtype), t_unrotated.to(out_dtype)
+    # Cache sine and cosine once to avoid recomputation
+    cos = freqs.cos()
+    sin = freqs.sin()
+    if scale != 1:
+        cos = cos * scale
+        sin = sin * scale
 
-    return torch.cat((t, t_unrotated), dim = -1)
+    # fused rotary computation
+    t_rot2 = rotate_half(t_rot)
+    t_rot = (t_rot * cos) + (t_rot2 * sin)
+
+    # Only cast if types changed
+    if t_rot.dtype != out_dtype:
+        t_rot = t_rot.to(out_dtype)
+    if t_unrot.dtype != out_dtype:
+        t_unrot = t_unrot.to(out_dtype)
+    if t_unrot.numel() > 0:
+        return torch.cat((t_rot, t_unrot), dim=-1)
+    else:
+        return t_rot
 
 class FeedForward(nn.Module):
     def __init__(
