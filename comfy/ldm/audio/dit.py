@@ -181,24 +181,58 @@ def rotate_half(x):
     return torch.cat((-x2, x1), dim = -1)
 
 def apply_rotary_pos_emb(t, freqs, scale = 1):
+    """
+    t: Tensor (..., seq_len, rot_dim + extra)
+    freqs: Tensor (..., seq_len, rot_dim)
+    """
     out_dtype = t.dtype
-
-    # cast to float32 if necessary for numerical stability
-    dtype = t.dtype #reduce(torch.promote_types, (t.dtype, freqs.dtype, torch.float32))
+    dtype = t.dtype
     rot_dim, seq_len = freqs.shape[-1], t.shape[-2]
-    freqs, t = freqs.to(dtype), t.to(dtype)
+    # only cast if needed
+    if freqs.dtype != dtype:
+        freqs = freqs.to(dtype)
+    if t.dtype != dtype:
+        t = t.to(dtype)
     freqs = freqs[-seq_len:, :]
 
+    # Efficiently add singleton dimension for broadcast, only if needed
     if t.ndim == 4 and freqs.ndim == 3:
-        freqs = rearrange(freqs, 'b n d -> b 1 n d')
+        freqs = freqs.unsqueeze(1)
 
-    # partial rotary embeddings, Wang et al. GPT-J
-    t, t_unrotated = t[..., :rot_dim], t[..., rot_dim:]
-    t = (t * freqs.cos() * scale) + (rotate_half(t) * freqs.sin() * scale)
+    # Split with slicing (no need for rearrange or tuple unpack)
+    t_rot = t[..., :rot_dim]
+    t_unrot = t[..., rot_dim:]
+    # Avoid recomputing trig if scale==1
+    cos = freqs.cos()
+    sin = freqs.sin()
+    if scale != 1:
+        cos = cos * scale
+        sin = sin * scale
+    # Inline rotate_half for efficiency
+    t_rot2 = _rotate_half_fast(t_rot)
+    t_new = t_rot * cos + t_rot2 * sin
 
-    t, t_unrotated = t.to(out_dtype), t_unrotated.to(out_dtype)
+    # Avoid unnecessary .to if already correct dtype
+    if t_new.dtype != out_dtype:
+        t_new = t_new.to(out_dtype)
+    if t_unrot.dtype != out_dtype:
+        t_unrot = t_unrot.to(out_dtype)
 
-    return torch.cat((t, t_unrotated), dim = -1)
+    # Efficient concat
+    return torch.cat((t_new, t_unrot), dim=-1)
+
+
+# Inlined & hot-path optimized rotate_half to avoid function and rearrange overhead.
+def _rotate_half_fast(x):
+    # x: (..., j * d)
+    orig_shape = x.shape
+    j = 2
+    d = orig_shape[-1] // j
+    x = x.view(*orig_shape[:-1], j, d)
+    x1 = x[..., 0, :]
+    x2 = x[..., 1, :]
+    rotated = torch.cat((-x2, x1), dim=-1)
+    return rotated
 
 class FeedForward(nn.Module):
     def __init__(
@@ -257,12 +291,12 @@ class Attention(nn.Module):
     def __init__(
         self,
         dim,
-        dim_heads = 64,
-        dim_context = None,
-        causal = False,
+        dim_heads=64,
+        dim_context=None,
+        causal=False,
         zero_init_output=True,
-        qk_norm = False,
-        natten_kernel_size = None,
+        qk_norm=False,
+        natten_kernel_size=None,
         dtype=None,
         device=None,
         operations=None,
@@ -282,7 +316,6 @@ class Attention(nn.Module):
             self.to_kv = operations.Linear(dim_kv, dim_kv * 2, bias=False, dtype=dtype, device=device)
         else:
             self.to_qkv = operations.Linear(dim, dim * 3, bias=False, dtype=dtype, device=device)
-
         self.to_out = operations.Linear(dim, dim, bias=False, dtype=dtype, device=device)
 
         # if zero_init_output:
@@ -300,22 +333,33 @@ class Attention(nn.Module):
         rotary_pos_emb = None,
         causal = None
     ):
-        h, kv_h, has_context = self.num_heads, self.kv_heads, context is not None
+        h = self.num_heads
+        kv_h = self.kv_heads
+        has_context = context is not None
 
         kv_input = context if has_context else x
 
+        # Fast path splitting projections
         if hasattr(self, 'to_q'):
             # Use separate linear projections for q and k/v
             q = self.to_q(x)
-            q = rearrange(q, 'b n (h d) -> b h n d', h = h)
+            q = q.view(q.shape[0], q.shape[1], h, -1).transpose(1, 2)  # b h n d
 
-            k, v = self.to_kv(kv_input).chunk(2, dim=-1)
-
-            k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h = kv_h), (k, v))
+            kv = self.to_kv(kv_input)
+            k, v = kv.split(kv.shape[-1] // 2, dim=-1)
+            k = k.view(k.shape[0], k.shape[1], kv_h, -1).transpose(1, 2)  # b kv_h n d
+            v = v.view(v.shape[0], v.shape[1], kv_h, -1).transpose(1, 2)
         else:
             # Use fused linear projection
-            q, k, v = self.to_qkv(x).chunk(3, dim=-1)
-            q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h = h), (q, k, v))
+            qkv = self.to_qkv(x)
+            q_len = qkv.shape[-1] // 3
+            q = qkv[..., :q_len]
+            k = qkv[..., q_len:2 * q_len]
+            v = qkv[..., 2 * q_len:]
+            # In-place view and transpose instead of rearrange
+            q = q.view(q.shape[0], q.shape[1], h, -1).transpose(1, 2)    # b h n d
+            k = k.view(k.shape[0], k.shape[1], h, -1).transpose(1, 2)    # b h n d
+            v = v.view(v.shape[0], v.shape[1], h, -1).transpose(1, 2)    # b h n d
 
         # Normalize q and k for cosine sim attention
         if self.qk_norm:
@@ -328,15 +372,20 @@ class Attention(nn.Module):
             q_dtype = q.dtype
             k_dtype = k.dtype
 
-            q = q.to(torch.float32)
-            k = k.to(torch.float32)
-            freqs = freqs.to(torch.float32)
+            if q.dtype != torch.float32:
+                q = q.to(torch.float32)
+            if k.dtype != torch.float32:
+                k = k.to(torch.float32)
+            if freqs.dtype != torch.float32:
+                freqs = freqs.to(torch.float32)
 
             q = apply_rotary_pos_emb(q, freqs)
             k = apply_rotary_pos_emb(k, freqs)
 
-            q = q.to(q_dtype)
-            k = k.to(k_dtype)
+            if q.dtype != q_dtype:
+                q = q.to(q_dtype)
+            if k.dtype != k_dtype:
+                k = k.to(k_dtype)
 
         input_mask = context_mask
 
@@ -347,10 +396,10 @@ class Attention(nn.Module):
         masks = []
 
         if input_mask is not None:
-            input_mask = rearrange(input_mask, 'b j -> b 1 1 j')
+            # Use efficient broadcasting, avoid rearrange for simple unsqueezing
+            input_mask = input_mask.unsqueeze(1).unsqueeze(2)
             masks.append(~input_mask)
 
-        # Other masks will be added here later
         n = q.shape[-2]
 
         causal = self.causal if causal is None else causal
@@ -361,13 +410,15 @@ class Attention(nn.Module):
         if h != kv_h:
             # Repeat interleave kv_heads to match q_heads
             heads_per_kv_head = h // kv_h
-            k, v = map(lambda t: t.repeat_interleave(heads_per_kv_head, dim = 1), (k, v))
+            k = k.repeat_interleave(heads_per_kv_head, dim=1)
+            v = v.repeat_interleave(heads_per_kv_head, dim=1)
 
         out = optimized_attention(q, k, v, h, skip_reshape=True)
         out = self.to_out(out)
 
         if mask is not None:
-            mask = rearrange(mask, 'b n -> b n 1')
+            # Unsqueeze last dim instead of rearrange, faster for b n -> b n 1
+            mask = mask.unsqueeze(-1)
             out = out.masked_fill(~mask, 0.)
 
         return out
