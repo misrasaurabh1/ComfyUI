@@ -89,14 +89,13 @@ def get_all_wrappers(wrapper_type: str, transformer_options: dict, is_model_opti
 
 class WrapperExecutor:
     """Handles call stack of wrappers around a function in an ordered manner."""
+
     def __init__(self, original: Callable, class_obj: object, wrappers: list[Callable], idx: int):
-        # NOTE: class_obj exists so that wrappers surrounding a class method can access
-        #       the class instance at runtime via executor.class_obj
         self.original = original
         self.class_obj = class_obj
-        self.wrappers = wrappers.copy()
+        self.wrappers = wrappers
         self.idx = idx
-        self.is_last = idx == len(wrappers)
+        self._wrappers_len = len(wrappers)
 
     def __call__(self, *args, **kwargs):
         """Calls the next wrapper or original function, whichever is appropriate."""
@@ -126,6 +125,10 @@ class WrapperExecutor:
     @classmethod
     def new_class_executor(cls, original: Callable, class_obj: object, wrappers: list[Callable], idx=0):
         return cls(original, class_obj, wrappers, idx=idx)
+
+    @property
+    def is_last(self):
+        return self.idx == self._wrappers_len
 
 class PatcherInjection:
     def __init__(self, inject: Callable, eject: Callable):
