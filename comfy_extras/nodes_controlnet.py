@@ -15,13 +15,14 @@ class SetUnionControlNetType:
     FUNCTION = "set_controlnet_type"
 
     def set_controlnet_type(self, control_net, type):
-        control_net = control_net.copy()
         type_number = UNION_CONTROLNET_TYPES.get(type, -1)
-        if type_number >= 0:
-            control_net.set_extra_arg("control_type", [type_number])
-        else:
-            control_net.set_extra_arg("control_type", [])
-
+        # Only copy control_net if needed to modify control_type
+        current_type = control_net.extra_args.get("control_type", [])
+        new_type = [type_number] if type_number >= 0 else []
+        if current_type == new_type:
+            return (control_net,)
+        control_net = control_net.copy()
+        control_net.set_extra_arg("control_type", new_type)
         return (control_net,)
 
 class ControlNetInpaintingAliMamaApply(nodes.ControlNetApplyAdvanced):
