@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Callable
+from typing import List, Callable
 
 class CallbacksMP:
     ON_CLONE = "on_clone"
@@ -89,14 +89,13 @@ def get_all_wrappers(wrapper_type: str, transformer_options: dict, is_model_opti
 
 class WrapperExecutor:
     """Handles call stack of wrappers around a function in an ordered manner."""
-    def __init__(self, original: Callable, class_obj: object, wrappers: list[Callable], idx: int):
+    def __init__(self, original: Callable, class_obj: object, wrappers: List[Callable], idx: int):
         # NOTE: class_obj exists so that wrappers surrounding a class method can access
         #       the class instance at runtime via executor.class_obj
         self.original = original
         self.class_obj = class_obj
-        self.wrappers = wrappers.copy()
+        self.wrappers = wrappers  # No unnecessary copy, assumes input is not mutated externally.
         self.idx = idx
-        self.is_last = idx == len(wrappers)
 
     def __call__(self, *args, **kwargs):
         """Calls the next wrapper or original function, whichever is appropriate."""
@@ -125,7 +124,11 @@ class WrapperExecutor:
 
     @classmethod
     def new_class_executor(cls, original: Callable, class_obj: object, wrappers: list[Callable], idx=0):
-        return cls(original, class_obj, wrappers, idx=idx)
+        return cls(original, class_obj, wrappers, idx)
+
+    @property
+    def is_last(self):
+        return self.idx == len(self.wrappers)
 
 class PatcherInjection:
     def __init__(self, inject: Callable, eject: Callable):
