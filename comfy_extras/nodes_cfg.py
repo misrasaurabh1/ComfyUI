@@ -2,19 +2,23 @@ import torch
 
 # https://github.com/WeichenFan/CFG-Zero-star
 def optimized_scale(positive, negative):
-    positive_flat = positive.reshape(positive.shape[0], -1)
-    negative_flat = negative.reshape(negative.shape[0], -1)
+    batch_size = positive.shape[0]
+    extra_dims = positive.ndim - 1
 
-    # Calculate dot production
+    positive_flat = positive.view(batch_size, -1)
+    negative_flat = negative.view(batch_size, -1)
+
+    # Calculate dot product
     dot_product = torch.sum(positive_flat * negative_flat, dim=1, keepdim=True)
 
     # Squared norm of uncondition
-    squared_norm = torch.sum(negative_flat ** 2, dim=1, keepdim=True) + 1e-8
+    squared_norm = torch.sum(negative_flat.square(), dim=1, keepdim=True) + 1e-8
 
     # st_star = v_cond^T * v_uncond / ||v_uncond||^2
     st_star = dot_product / squared_norm
 
-    return st_star.reshape([positive.shape[0]] + [1] * (positive.ndim - 1))
+    # reshape to (batch_size, 1, 1, ...) matching number of extra dims
+    return st_star.view(batch_size, *([1] * extra_dims))
 
 class CFGZeroStar:
     @classmethod
