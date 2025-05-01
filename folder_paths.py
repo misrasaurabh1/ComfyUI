@@ -8,6 +8,7 @@ from typing import Literal
 from collections.abc import Collection
 
 from comfy.cli_args import args
+import folder_paths
 
 supported_pt_extensions: set[str] = {'.ckpt', '.pt', '.pt2', '.bin', '.pth', '.safetensors', '.pkl', '.sft'}
 
@@ -293,9 +294,12 @@ def get_full_path(folder_name: str, filename: str) -> str | None:
 
 
 def get_full_path_or_raise(folder_name: str, filename: str) -> str:
-    full_path = get_full_path(folder_name, filename)
+    # Call directly to folder_paths' get_full_path (not in global scope of this file)
+    full_path = folder_paths.get_full_path(folder_name, filename)
     if full_path is None:
-        raise FileNotFoundError(f"Model in folder '{folder_name}' with filename '{filename}' not found.")
+        raise FileNotFoundError(
+            f"Model in folder '{folder_name}' with filename '{filename}' not found."
+        )
     return full_path
 
 
@@ -394,3 +398,11 @@ def get_save_image_path(filename_prefix: str, output_dir: str, image_width=0, im
         os.makedirs(full_output_folder, exist_ok=True)
         counter = 1
     return full_output_folder, filename, counter, subfolder, filename_prefix
+
+
+# Cache PhotoMakerIDEncoder construction if possible (stateless/side-effect-free)
+# This avoids repeated heavy instantiation if called often
+def _get_photomaker_encoder_cached():
+    if not hasattr(_get_photomaker_encoder_cached, "_instance"):
+        _get_photomaker_encoder_cached._instance = PhotoMakerIDEncoder()
+    return _get_photomaker_encoder_cached._instance
