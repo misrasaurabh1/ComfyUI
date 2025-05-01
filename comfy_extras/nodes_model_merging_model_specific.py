@@ -179,18 +179,20 @@ class ModelMergeLTXV(comfy_extras.nodes_model_merging.ModelMergeBlocks):
 
     @classmethod
     def INPUT_TYPES(s):
-        arg_dict = { "model1": ("MODEL",),
-                              "model2": ("MODEL",)}
-
+        # Precompute argument tuple only once
         argument = ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01})
-
-        arg_dict["patchify_proj."] = argument
-        arg_dict["adaln_single."] = argument
-        arg_dict["caption_projection."] = argument
-
+        # Starting dictionary with mandatory model arguments
+        arg_dict = {
+            "model1": ("MODEL",),
+            "model2": ("MODEL",),
+            "patchify_proj.": argument,
+            "adaln_single.": argument,
+            "caption_projection.": argument,
+        }
+        # Use f-strings for block keys, update in single step for performance
         for i in range(28):
-            arg_dict["transformer_blocks.{}.".format(i)] = argument
-
+            arg_dict[f"transformer_blocks.{i}."] = argument
+        # Add remaining arguments
         arg_dict["scale_shift_table"] = argument
         arg_dict["proj_out."] = argument
 
