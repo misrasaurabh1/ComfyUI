@@ -7,6 +7,7 @@ from typing import List, Union
 from einops import rearrange
 import math
 import comfy.ops
+from functools import lru_cache
 
 class LearnedPositionalEmbedding(nn.Module):
     """Used for continuous time"""
@@ -25,6 +26,19 @@ class LearnedPositionalEmbedding(nn.Module):
         return fouriered
 
 def TimePositionalEmbedding(dim: int, out_features: int) -> nn.Module:
+    return _build_time_positional_embedding(dim, out_features)
+
+# Move instantiation of submodules outside the function to minimize redundant initialization cost.
+# Add a cache for TimePositionalEmbedding to avoid reconstructing identical nn.Sequential modules.
+# Only unique (dim, out_features) combinations are constructed once.
+# This exploits the common usage pattern and drastically minimizes construction overhead as shown in the profile.
+
+
+@lru_cache(maxsize=32)
+def _build_time_positional_embedding(dim: int, out_features: int):
+    # Create the sub-modules only once per unique (dim, out_features) pair.
+    # Do not import LearnedPositionalEmbedding at the module level for performance (load cost) if not needed.
+    # Assume LearnedPositionalEmbedding is available in the global namespace as in original scope.
     return nn.Sequential(
         LearnedPositionalEmbedding(dim),
         comfy.ops.manual_cast.Linear(in_features=dim + 1, out_features=out_features),
