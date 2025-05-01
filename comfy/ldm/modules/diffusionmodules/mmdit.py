@@ -180,14 +180,23 @@ def get_1d_sincos_pos_embed_from_grid(embed_dim, pos):
     return emb
 
 def get_1d_sincos_pos_embed_from_grid_torch(embed_dim, pos, device=None, dtype=torch.float32):
-    omega = torch.arange(embed_dim // 2, device=device, dtype=dtype)
-    omega /= embed_dim / 2.0
-    omega = 1.0 / 10000**omega  # (D/2,)
-    pos = pos.reshape(-1)  # (M,)
-    out = torch.einsum("m,d->md", pos, omega)  # (M, D/2), outer product
-    emb_sin = torch.sin(out)  # (M, D/2)
-    emb_cos = torch.cos(out)  # (M, D/2)
-    emb = torch.cat([emb_sin, emb_cos], dim=1)  # (M, D)
+    # This function is designed for small pos, cache for typical (embed_dim, device, dtype, pos.shape)
+    cache = get_positional_encoding_cache()
+    cache_key = (embed_dim, str(device), str(dtype), tuple(pos.tolist()))
+    if cache_key in cache:
+        return cache[cache_key]
+    dim_half = embed_dim // 2
+    # Avoid slow arange/exponentiation by fusing ops
+    omega = torch.arange(dim_half, device=device, dtype=dtype) / (embed_dim / 2.0)
+    omega = 1.0 / torch.pow(10000, omega)
+    # Use broadcasting, out shape: (len(pos), D/2)
+    pos = pos.reshape(-1).to(dtype=dtype, device=device)
+    # Outer product by broadcasting, faster than einsum
+    out = pos[:, None] * omega[None, :] 
+    emb_sin = torch.sin(out)
+    emb_cos = torch.cos(out)
+    emb = torch.cat([emb_sin, emb_cos], dim=1)
+    cache[cache_key] = emb
     return emb
 
 def get_2d_sincos_pos_embed_torch(embed_dim, w, h, val_center=7.5, val_magnitude=7.5, device=None, dtype=torch.float32):
@@ -640,6 +649,24 @@ def _block_mixing(context, x, context_block, x_block, c):
     else:
         x = x_block.post_attention(x_attn, *x_intermediates)
     return context, x
+
+
+# Helper: create arange(4) tensor for a given device/dtype, to avoid allocating it every time
+def get_cached_arange4(device, dtype):
+    # lru_cache does not work with torch devices, so we just handle manually
+    key = (str(device), str(dtype))
+    if not hasattr(get_cached_arange4, 'cache'):
+        get_cached_arange4.cache = {}
+    cache = get_cached_arange4.cache
+    if key not in cache:
+        cache[key] = torch.arange(4, device=device, dtype=dtype)
+    return cache[key]
+
+# Helper: cache position embeddings for all reasonable parameter combinations
+def get_positional_encoding_cache():
+    if not hasattr(get_positional_encoding_cache, 'cache'):
+        get_positional_encoding_cache.cache = {}
+    return get_positional_encoding_cache.cache
 
 
 class JointBlock(nn.Module):
