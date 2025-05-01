@@ -1,9 +1,11 @@
+from __future__ import annotations
 import torch
 import torch.nn as nn
 import folder_paths
 import comfy.clip_model
 import comfy.clip_vision
 import comfy.ops
+import comfy.checkpoint_pickle
 
 # code for model from: https://github.com/TencentARC/PhotoMaker/blob/main/photomaker/model.py under Apache License Version 2.0
 VISION_CONFIG_DICT = {
@@ -127,11 +129,15 @@ class PhotoMakerLoader:
     CATEGORY = "_for_testing/photomaker"
 
     def load_photomaker_model(self, photomaker_model_name):
+        # Use direct call to folder_paths
         photomaker_model_path = folder_paths.get_full_path_or_raise("photomaker", photomaker_model_name)
-        photomaker_model = PhotoMakerIDEncoder()
+        # Use cached PhotoMakerIDEncoder instance to avoid repeated heavy instantiation
+        photomaker_model = _get_photomaker_encoder_cached()
         data = comfy.utils.load_torch_file(photomaker_model_path, safe_load=True)
-        if "id_encoder" in data:
-            data = data["id_encoder"]
+        # Get 'id_encoder' if present
+        id_encoder = data.get("id_encoder", None)
+        if id_encoder is not None:
+            data = id_encoder
         photomaker_model.load_state_dict(data)
         return (photomaker_model,)
 
@@ -179,6 +185,14 @@ class PhotoMakerEncode:
             out = cond
 
         return ([[out, {"pooled_output": pooled}]], )
+
+
+# Cache PhotoMakerIDEncoder construction if possible (stateless/side-effect-free)
+# This avoids repeated heavy instantiation if called often
+def _get_photomaker_encoder_cached():
+    if not hasattr(_get_photomaker_encoder_cached, "_instance"):
+        _get_photomaker_encoder_cached._instance = PhotoMakerIDEncoder()
+    return _get_photomaker_encoder_cached._instance
 
 
 NODE_CLASS_MAPPINGS = {

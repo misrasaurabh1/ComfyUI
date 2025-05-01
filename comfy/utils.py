@@ -15,6 +15,7 @@
     You should have received a copy of the GNU General Public License
     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 """
+from __future__ import annotations
 
 
 import torch
@@ -50,39 +51,48 @@ def load_torch_file(ckpt, safe_load=False, device=None, return_metadata=False):
     if device is None:
         device = torch.device("cpu")
     metadata = None
-    if ckpt.lower().endswith(".safetensors") or ckpt.lower().endswith(".sft"):
+    ckpt_lower = ckpt.lower()
+    # Avoid repeated lower/endswith calls
+    if ckpt_lower.endswith(".safetensors") or ckpt_lower.endswith(".sft"):
         try:
             with safetensors.safe_open(ckpt, framework="pt", device=device.type) as f:
-                sd = {}
-                for k in f.keys():
-                    sd[k] = f.get_tensor(k)
+                sd = {k: f.get_tensor(k) for k in f.keys()}
                 if return_metadata:
                     metadata = f.metadata()
         except Exception as e:
             if len(e.args) > 0:
                 message = e.args[0]
                 if "HeaderTooLarge" in message:
-                    raise ValueError("{}\n\nFile path: {}\n\nThe safetensors file is corrupt or invalid. Make sure this is actually a safetensors file and not a ckpt or pt or other filetype.".format(message, ckpt))
+                    raise ValueError(
+                        "{}\n\nFile path: {}\n\nThe safetensors file is corrupt or invalid. Make sure this is actually a safetensors file and not a ckpt or pt or other filetype.".format(
+                            message, ckpt
+                        )
+                    )
                 if "MetadataIncompleteBuffer" in message:
-                    raise ValueError("{}\n\nFile path: {}\n\nThe safetensors file is corrupt/incomplete. Check the file size and make sure you have copied/downloaded it correctly.".format(message, ckpt))
-            raise e
+                    raise ValueError(
+                        "{}\n\nFile path: {}\n\nThe safetensors file is corrupt/incomplete. Check the file size and make sure you have copied/downloaded it correctly.".format(
+                            message, ckpt
+                        )
+                    )
+            raise
     else:
+        # torch.load path (no allocations/mutations after load)
         if safe_load or ALWAYS_SAFE_LOAD:
             pl_sd = torch.load(ckpt, map_location=device, weights_only=True)
         else:
             pl_sd = torch.load(ckpt, map_location=device, pickle_module=comfy.checkpoint_pickle)
         if "global_step" in pl_sd:
             logging.debug(f"Global Step: {pl_sd['global_step']}")
-        if "state_dict" in pl_sd:
-            sd = pl_sd["state_dict"]
-        else:
-            if len(pl_sd) == 1:
-                key = list(pl_sd.keys())[0]
-                sd = pl_sd[key]
-                if not isinstance(sd, dict):
-                    sd = pl_sd
-            else:
+        sd = pl_sd.get("state_dict")
+        if sd is not None:
+            pass  # got state_dict
+        elif len(pl_sd) == 1:
+            key, = pl_sd.keys()
+            sd = pl_sd[key]
+            if not isinstance(sd, dict):
                 sd = pl_sd
+        else:
+            sd = pl_sd
     return (sd, metadata) if return_metadata else sd
 
 def save_torch_file(sd, ckpt, metadata=None):
@@ -1071,3 +1081,11 @@ def upscale_dit_mask(mask: torch.Tensor, img_size_in, img_size_out):
             dim=1
         )
         return out
+
+
+# Cache PhotoMakerIDEncoder construction if possible (stateless/side-effect-free)
+# This avoids repeated heavy instantiation if called often
+def _get_photomaker_encoder_cached():
+    if not hasattr(_get_photomaker_encoder_cached, "_instance"):
+        _get_photomaker_encoder_cached._instance = PhotoMakerIDEncoder()
+    return _get_photomaker_encoder_cached._instance
