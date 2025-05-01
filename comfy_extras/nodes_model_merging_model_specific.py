@@ -157,20 +157,19 @@ class ModelMergeMochiPreview(comfy_extras.nodes_model_merging.ModelMergeBlocks):
 
     @classmethod
     def INPUT_TYPES(s):
-        arg_dict = { "model1": ("MODEL",),
-                              "model2": ("MODEL",)}
-
         argument = ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01})
 
-        arg_dict["pos_frequencies."] = argument
-        arg_dict["t_embedder."] = argument
-        arg_dict["t5_y_embedder."] = argument
-        arg_dict["t5_yproj."] = argument
-
-        for i in range(48):
-            arg_dict["blocks.{}.".format(i)] = argument
-
-        arg_dict["final_layer."] = argument
+        # Build the dictionary in a single step using comprehensions
+        arg_dict = {
+            "model1": ("MODEL",),
+            "model2": ("MODEL",),
+            "pos_frequencies.": argument,
+            "t_embedder.": argument,
+            "t5_y_embedder.": argument,
+            "t5_yproj.": argument,
+            "final_layer.": argument,
+            **{f"blocks.{i}.": argument for i in range(48)}
+        }
 
         return {"required": arg_dict}
 
