@@ -15,8 +15,15 @@ class EmptyMochiLatentVideo:
     CATEGORY = "latent/video"
 
     def generate(self, width, height, length, batch_size=1):
-        latent = torch.zeros([batch_size, 12, ((length - 1) // 6) + 1, height // 8, width // 8], device=comfy.model_management.intermediate_device())
-        return ({"samples":latent}, )
+        shape = (
+            batch_size, 
+            12, 
+            ((length - 1) // 6) + 1, 
+            height // 8, 
+            width // 8
+        )
+        latent = comfy.model_management.torch.zeros(shape, device="cpu")
+        return ({"samples": latent}, )
 
 NODE_CLASS_MAPPINGS = {
     "EmptyMochiLatentVideo": EmptyMochiLatentVideo,
