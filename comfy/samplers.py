@@ -2,6 +2,9 @@ from __future__ import annotations
 from .k_diffusion import sampling as k_diffusion_sampling
 from .extra_samplers import uni_pc
 from typing import TYPE_CHECKING, Callable, NamedTuple
+import torch
+import numpy as np
+
 if TYPE_CHECKING:
     from comfy.model_patcher import ModelPatcher
     from comfy.model_base import BaseModel
@@ -474,19 +477,27 @@ def linear_quadratic_schedule(model_sampling, steps, threshold_noise=0.025, line
     else:
         if linear_steps is None:
             linear_steps = steps // 2
-        linear_sigma_schedule = [i * threshold_noise / linear_steps for i in range(linear_steps)]
+        
+        # Use numpy for efficient vectorized calculations
+        linear_idx = np.arange(linear_steps, dtype=np.float32)
+        linear_sigma_schedule = linear_idx * (threshold_noise / linear_steps)
+        
         threshold_noise_step_diff = linear_steps - threshold_noise * steps
         quadratic_steps = steps - linear_steps
-        quadratic_coef = threshold_noise_step_diff / (linear_steps * quadratic_steps ** 2)
-        linear_coef = threshold_noise / linear_steps - 2 * threshold_noise_step_diff / (quadratic_steps ** 2)
-        const = quadratic_coef * (linear_steps ** 2)
-        quadratic_sigma_schedule = [
-            quadratic_coef * (i ** 2) + linear_coef * i + const
-            for i in range(linear_steps, steps)
-        ]
-        sigma_schedule = linear_sigma_schedule + quadratic_sigma_schedule + [1.0]
-        sigma_schedule = [1.0 - x for x in sigma_schedule]
-    return torch.FloatTensor(sigma_schedule) * model_sampling.sigma_max.cpu()
+        q_steps_sq = quadratic_steps * quadratic_steps
+        quadratic_coef = threshold_noise_step_diff / (linear_steps * q_steps_sq)
+        linear_coef = threshold_noise / linear_steps - 2 * threshold_noise_step_diff / q_steps_sq
+        const = quadratic_coef * (linear_steps * linear_steps)
+        
+        quadratic_idx = np.arange(linear_steps, steps, dtype=np.float32)
+        quadratic_sigma_schedule = quadratic_coef * (quadratic_idx ** 2) + linear_coef * quadratic_idx + const
+        
+        # Efficient concatenation and computation
+        sigma_schedule = np.concatenate([linear_sigma_schedule, quadratic_sigma_schedule, [1.0]]).astype(np.float32)
+        sigma_schedule = 1.0 - sigma_schedule
+
+    # Convert to torch tensor in one go, multiply by sigma_max (already on CPU)
+    return torch.from_numpy(sigma_schedule) * model_sampling.sigma_max.cpu()
 
 # Referenced from https://github.com/AUTOMATIC1111/stable-diffusion-webui/pull/15608
 def kl_optimal_scheduler(n: int, sigma_min: float, sigma_max: float) -> torch.Tensor:
