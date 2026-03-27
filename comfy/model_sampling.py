@@ -348,16 +348,13 @@ class StableCascadeSampling(ModelSamplingDiscrete):
 
 
 def flux_time_shift(mu: float, sigma: float, t):
-    return math.exp(mu) / (math.exp(mu) + (1 / t - 1) ** sigma)
+    exp_mu = math.exp(mu)
+    return exp_mu / (exp_mu + (1 / t - 1) ** sigma)
 
 class ModelSamplingFlux(torch.nn.Module):
     def __init__(self, model_config=None):
         super().__init__()
-        if model_config is not None:
-            sampling_settings = model_config.sampling_settings
-        else:
-            sampling_settings = {}
-
+        sampling_settings = model_config.sampling_settings if model_config else {}
         self.set_parameters(shift=sampling_settings.get("shift", 1.15))
 
     def set_parameters(self, shift=1.15, timesteps=10000):
@@ -382,7 +379,7 @@ class ModelSamplingFlux(torch.nn.Module):
     def percent_to_sigma(self, percent):
         if percent <= 0.0:
             return 1.0
-        if percent >= 1.0:
+        elif percent >= 1.0:
             return 0.0
         return flux_time_shift(self.shift, 1.0, 1.0 - percent)
 
