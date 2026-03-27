@@ -4,6 +4,7 @@ import comfy.latent_formats
 import nodes
 import torch
 import node_helpers
+from functools import lru_cache
 
 
 class LCM(comfy.model_sampling.EPS):
@@ -141,10 +142,23 @@ class ModelSamplingSD3:
 
 class ModelSamplingAuraFlow(ModelSamplingSD3):
     @classmethod
+    @lru_cache(maxsize=1)
     def INPUT_TYPES(s):
-        return {"required": { "model": ("MODEL",),
-                              "shift": ("FLOAT", {"default": 1.73, "min": 0.0, "max": 100.0, "step":0.01}),
-                              }}
+        # Cached to avoid rebuilding the same dict repeatedly
+        return {
+            "required": {
+                "model": ("MODEL",),
+                "shift": (
+                    "FLOAT",
+                    {
+                        "default": 1.73,
+                        "min": 0.0,
+                        "max": 100.0,
+                        "step": 0.01
+                    }
+                ),
+            }
+        }
 
     FUNCTION = "patch_aura"
 
