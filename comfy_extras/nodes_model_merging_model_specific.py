@@ -201,23 +201,22 @@ class ModelMergeCosmos7B(comfy_extras.nodes_model_merging.ModelMergeBlocks):
 
     @classmethod
     def INPUT_TYPES(s):
-        arg_dict = { "model1": ("MODEL",),
-                              "model2": ("MODEL",)}
-
+        # Predefine the shared argument tuple to avoid allocations
         argument = ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01})
-
-        arg_dict["pos_embedder."] = argument
-        arg_dict["extra_pos_embedder."] = argument
-        arg_dict["x_embedder."] = argument
-        arg_dict["t_embedder."] = argument
-        arg_dict["affline_norm."] = argument
-
-
+        # Use direct initialization for required keys
+        arg_dict = {
+            "model1": ("MODEL",),
+            "model2": ("MODEL",),
+            "pos_embedder.": argument,
+            "extra_pos_embedder.": argument,
+            "x_embedder.": argument,
+            "t_embedder.": argument,
+            "affline_norm.": argument,
+        }
+        # Avoid attribute lookups in the loop and use f-strings
         for i in range(28):
-            arg_dict["blocks.block{}.".format(i)] = argument
-
+            arg_dict[f"blocks.block{i}."] = argument
         arg_dict["final_layer."] = argument
-
         return {"required": arg_dict}
 
 class ModelMergeCosmos14B(comfy_extras.nodes_model_merging.ModelMergeBlocks):
