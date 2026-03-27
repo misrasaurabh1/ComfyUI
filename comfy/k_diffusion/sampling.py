@@ -82,10 +82,12 @@ def default_noise_sampler(x, seed=None):
 
         generator = torch.Generator(device=x.device)
         generator.manual_seed(seed)
+        # Create noise tensor ahead of time to avoid multiple calls
+        noise = torch.randn(x.size(), dtype=x.dtype, layout=x.layout, device=x.device, generator=generator)
     else:
-        generator = None
+        noise = torch.randn(x.size(), dtype=x.dtype, layout=x.layout, device=x.device)
 
-    return lambda sigma, sigma_next: torch.randn(x.size(), dtype=x.dtype, layout=x.layout, device=x.device, generator=generator)
+    return lambda sigma, sigma_next: noise
 
 
 class BatchedBrownianTree:
@@ -976,28 +978,60 @@ def sample_dpmpp_sde_gpu(model, x, sigmas, extra_args=None, callback=None, disab
 
 
 def DDPMSampler_step(x, sigma, sigma_prev, noise, noise_sampler):
-    alpha_cumprod = 1 / ((sigma * sigma) + 1)
-    alpha_cumprod_prev = 1 / ((sigma_prev * sigma_prev) + 1)
-    alpha = (alpha_cumprod / alpha_cumprod_prev)
-
-    mu = (1.0 / alpha).sqrt() * (x - (1 - alpha) * noise / (1 - alpha_cumprod).sqrt())
+    # Precalculate constants to save computation time
+    sigma_sq_plus_one = sigma ** 2 + 1
+    sigma_prev_sq_plus_one = sigma_prev ** 2 + 1
+    
+    alpha_cumprod = 1 / sigma_sq_plus_one
+    alpha_cumprod_prev = 1 / sigma_prev_sq_plus_one
+    alpha = alpha_cumprod / alpha_cumprod_prev
+    
+    # sqrt is computationally expensive, calculate once and reuse
+    sqrt_alpha = torch.sqrt(1.0 / alpha)
+    sqrt_alpha_cumprod = torch.sqrt(1.0 - alpha_cumprod)
+    sqrt_alpha_cumprod_prev = torch.sqrt(1.0 - alpha_cumprod_prev)
+    sqrt_one_minus_alpha = torch.sqrt((1 - alpha) * (1 - alpha_cumprod_prev) / (1 - alpha_cumprod))
+    
+    # Rearrange calculations to minimize redundant operations
+    mu = sqrt_alpha * (x - (1 - alpha) * noise / sqrt_alpha_cumprod)
+    
     if sigma_prev > 0:
-        mu += ((1 - alpha) * (1. - alpha_cumprod_prev) / (1. - alpha_cumprod)).sqrt() * noise_sampler(sigma, sigma_prev)
+        mu += sqrt_one_minus_alpha * noise_sampler(sigma, sigma_prev)
+    
     return mu
 
 def generic_step_sampler(model, x, sigmas, extra_args=None, callback=None, disable=None, noise_sampler=None, step_function=None):
-    extra_args = {} if extra_args is None else extra_args
+    extra_args = extra_args or {}
     seed = extra_args.get("seed", None)
     noise_sampler = default_noise_sampler(x, seed=seed) if noise_sampler is None else noise_sampler
-    s_in = x.new_ones([x.shape[0]])
+    s_in = torch.ones([x.shape[0]], device=x.device, dtype=x.dtype)
 
     for i in trange(len(sigmas) - 1, disable=disable):
-        denoised = model(x, sigmas[i] * s_in, **extra_args)
+        # Precalculate constants to reduce redundant computation
+        sigmas_i = sigmas[i]
+        sigmas_i_next = sigmas[i + 1]
+        sigmas_i_sq_plus_one = sigmas_i ** 2 + 1
+        sqrt_sigmas_i_sq_plus_one = torch.sqrt(sigmas_i_sq_plus_one)
+        
+        # Directly pass in scaled sigmas
+        denoised = model(x, sigmas_i * s_in, **extra_args)
+        
         if callback is not None:
-            callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigmas[i], 'denoised': denoised})
-        x = step_function(x / torch.sqrt(1.0 + sigmas[i] ** 2.0), sigmas[i], sigmas[i + 1], (x - denoised) / sigmas[i], noise_sampler)
-        if sigmas[i + 1] != 0:
-            x *= torch.sqrt(1.0 + sigmas[i + 1] ** 2.0)
+            callback({
+                'x': x, 
+                'i': i, 
+                'sigma': sigmas_i, 
+                'sigma_hat': sigmas_i, 
+                'denoised': denoised
+            })
+        
+        scaled_x = x / sqrt_sigmas_i_sq_plus_one
+        noise = (scaled_x - denoised) / sigmas_i
+        x = step_function(scaled_x, sigmas_i, sigmas_i_next, noise, noise_sampler)
+        
+        if sigmas_i_next != 0:
+            x *= torch.sqrt(sigmas_i_next ** 2 + 1)
+    
     return x
 
 
@@ -1011,14 +1045,23 @@ def sample_lcm(model, x, sigmas, extra_args=None, callback=None, disable=None, n
     seed = extra_args.get("seed", None)
     noise_sampler = default_noise_sampler(x, seed=seed) if noise_sampler is None else noise_sampler
     s_in = x.new_ones([x.shape[0]])
+
+    # Precompute sigmas squared values to avoid computing them in the loop
+    precomputed_sigmas = [sigma * s_in for sigma in sigmas]
+    
     for i in trange(len(sigmas) - 1, disable=disable):
-        denoised = model(x, sigmas[i] * s_in, **extra_args)
+        sigma_i = precomputed_sigmas[i]
+        sigma_next = sigmas[i + 1]
+        denoised = model(x, sigma_i, **extra_args)
+        
         if callback is not None:
             callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigmas[i], 'denoised': denoised})
 
         x = denoised
-        if sigmas[i + 1] > 0:
-            x = model.inner_model.inner_model.model_sampling.noise_scaling(sigmas[i + 1], noise_sampler(sigmas[i], sigmas[i + 1]), x)
+        if sigma_next > 0:
+            noise = noise_sampler(sigmas[i], sigma_next)
+            x = model.inner_model.inner_model.model_sampling.noise_scaling(sigma_next, noise, x)
+    
     return x
 
 
@@ -1029,54 +1072,64 @@ def sample_heunpp2(model, x, sigmas, extra_args=None, callback=None, disable=Non
     extra_args = {} if extra_args is None else extra_args
     s_in = x.new_ones([x.shape[0]])
     s_end = sigmas[-1]
-    for i in trange(len(sigmas) - 1, disable=disable):
-        gamma = min(s_churn / (len(sigmas) - 1), 2 ** 0.5 - 1) if s_tmin <= sigmas[i] <= s_tmax else 0.
-        eps = torch.randn_like(x) * s_noise
-        sigma_hat = sigmas[i] * (gamma + 1)
+    len_sigmas = len(sigmas)
+
+    sqrt_2_inv = 2 ** 0.5 - 1  # Precompute this once
+
+    for i in trange(len_sigmas - 1, disable=disable):
+        sigma_i = sigmas[i]
+        sigma_ip1 = sigmas[i + 1]  # sigma[i+1]
+        gamma = min(s_churn / (len_sigmas - 1), sqrt_2_inv) if s_tmin <= sigma_i <= s_tmax else 0.
+
         if gamma > 0:
-            x = x + eps * (sigma_hat ** 2 - sigmas[i] ** 2) ** 0.5
+            eps = torch.randn_like(x) * s_noise
+            sigma_hat = sigma_i * (gamma + 1)
+            x = x + eps * (sigma_hat ** 2 - sigma_i ** 2) ** 0.5
+        else:
+            sigma_hat = sigma_i
+
         denoised = model(x, sigma_hat * s_in, **extra_args)
         d = to_d(x, sigma_hat, denoised)
+
         if callback is not None:
-            callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigma_hat, 'denoised': denoised})
-        dt = sigmas[i + 1] - sigma_hat
-        if sigmas[i + 1] == s_end:
+            callback({'x': x, 'i': i, 'sigma': sigma_i, 'sigma_hat': sigma_hat, 'denoised': denoised})
+
+        dt = sigma_ip1 - sigma_hat
+
+        if sigma_ip1 == s_end:
             # Euler method
             x = x + d * dt
         elif sigmas[i + 2] == s_end:
-
             # Heun's method
             x_2 = x + d * dt
-            denoised_2 = model(x_2, sigmas[i + 1] * s_in, **extra_args)
-            d_2 = to_d(x_2, sigmas[i + 1], denoised_2)
+            denoised_2 = model(x_2, sigma_ip1 * s_in, **extra_args)
+            d_2 = to_d(x_2, sigma_ip1, denoised_2)
 
-            w = 2 * sigmas[0]
-            w2 = sigmas[i+1]/w
-            w1 = 1 - w2
-
-            d_prime = d * w1 + d_2 * w2
-
+            w1 = sigma_ip1 / (2 * sigmas[0])  # Recalculate only weights and their combination factor
+            d_prime = d * (1 - w1) + d_2 * w1
 
             x = x + d_prime * dt
-
         else:
             # Heun++
+            sigma_ip2 = sigmas[i + 2]  # sigma[i+2]
+            dt_2 = sigma_ip2 - sigma_ip1
+
             x_2 = x + d * dt
-            denoised_2 = model(x_2, sigmas[i + 1] * s_in, **extra_args)
-            d_2 = to_d(x_2, sigmas[i + 1], denoised_2)
-            dt_2 = sigmas[i + 2] - sigmas[i + 1]
+            denoised_2 = model(x_2, sigma_ip1 * s_in, **extra_args)
+            d_2 = to_d(x_2, sigma_ip1, denoised_2)
 
             x_3 = x_2 + d_2 * dt_2
-            denoised_3 = model(x_3, sigmas[i + 2] * s_in, **extra_args)
-            d_3 = to_d(x_3, sigmas[i + 2], denoised_3)
+            denoised_3 = model(x_3, sigma_ip2 * s_in, **extra_args)
+            d_3 = to_d(x_3, sigma_ip2, denoised_3)
 
             w = 3 * sigmas[0]
-            w2 = sigmas[i + 1] / w
-            w3 = sigmas[i + 2] / w
-            w1 = 1 - w2 - w3
+            w1 = 1 - (sigma_ip1 + sigma_ip2) / w
+            w2 = sigma_ip1 / w
+            w3 = sigma_ip2 / w
 
             d_prime = w1 * d + w2 * d_2 + w3 * d_3
             x = x + d_prime * dt
+
     return x
 
 
