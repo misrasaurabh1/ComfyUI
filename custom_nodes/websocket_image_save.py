@@ -25,13 +25,20 @@ class SaveImageWebsocket:
     CATEGORY = "api/image"
 
     def save_images(self, images):
-        pbar = comfy.utils.ProgressBar(images.shape[0])
-        step = 0
-        for image in images:
-            i = 255. * image.cpu().numpy()
-            img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8))
-            pbar.update_absolute(step, images.shape[0], ("PNG", img, None))
-            step += 1
+        n_images = images.shape[0]
+        pbar = comfy.utils.ProgressBar(n_images)
+        
+        # Transfer all to CPU and numpy in one operation
+        np_images = images.cpu().numpy() # (N, ...)
+
+        # Scale and clip all in a vectorized manner
+        i = np_images * 255.
+        i = np.clip(i, 0, 255).astype(np.uint8)
+        
+        for idx, img_arr in enumerate(i):
+            img = Image.fromarray(img_arr)
+            # Only pass total once; ProgressBar ignores if no change.
+            pbar.update_absolute(idx, n_images if idx == 0 else None, ("PNG", img, None))
 
         return {}
 
