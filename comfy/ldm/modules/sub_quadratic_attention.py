@@ -63,33 +63,43 @@ def _summarize_chunk(
     upcast_attention: bool,
     mask,
 ) -> AttnChunk:
+    # Preallocate attn_weights tensor only once and reuse
+    result_shape = (query.shape[0], query.shape[1], key_t.shape[-1])
+    device = query.device
+    dtype = torch.float if upcast_attention else query.dtype
+
     if upcast_attention:
-        with torch.autocast(enabled=False, device_type = 'cuda'):
-            query = query.float()
-            key_t = key_t.float()
+        with torch.autocast(enabled=False, device_type='cuda'):
+            query_ = query.float()
+            key_t_ = key_t.float()
             attn_weights = torch.baddbmm(
-                torch.empty(1, 1, 1, device=query.device, dtype=query.dtype),
-                query,
-                key_t,
+                torch.zeros(result_shape, device=device, dtype=dtype),
+                query_,
+                key_t_,
                 alpha=scale,
                 beta=0,
+                out=None,
             )
     else:
         attn_weights = torch.baddbmm(
-            torch.empty(1, 1, 1, device=query.device, dtype=query.dtype),
-            query,
-            key_t,
-            alpha=scale,
-            beta=0,
+            torch.zeros(result_shape, device=device, dtype=dtype),
+            query, key_t, alpha=scale, beta=0, out=None
         )
-    max_score, _ = torch.max(attn_weights, -1, keepdim=True)
-    max_score = max_score.detach()
-    attn_weights -= max_score
+
+    # In-place subtract max for stability
+    max_score = attn_weights.amax(dim=-1, keepdim=True)
+    # no .detach() needed before broadcasting/slicing
+    attn_weights.sub_(max_score)
     if mask is not None:
-        attn_weights += mask
-    torch.exp(attn_weights, out=attn_weights)
-    exp_weights = attn_weights.to(value.dtype)
+        attn_weights.add_(mask)  # in-place add mask
+
+    torch.exp(attn_weights, out=attn_weights)  # in-place exp
+
+    # Ensure type match for bmm
+    exp_weights = attn_weights.to(dtype=value.dtype, copy=False)
+    # Batch matmul
     exp_values = torch.bmm(exp_weights, value)
+    # Squeeze as efficiently as possible
     max_score = max_score.squeeze(-1)
     return AttnChunk(exp_values, exp_weights.sum(dim=-1), max_score)
 
