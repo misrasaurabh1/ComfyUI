@@ -128,13 +128,10 @@ class ModelSamplingSD3:
     def patch(self, model, shift, multiplier=1000):
         m = model.clone()
 
-        sampling_base = comfy.model_sampling.ModelSamplingDiscreteFlow
-        sampling_type = comfy.model_sampling.CONST
-
-        class ModelSamplingAdvanced(sampling_base, sampling_type):
-            pass
-
-        model_sampling = ModelSamplingAdvanced(model.model.model_config)
+        # Only look up attribute once
+        model_config = model.model.model_config
+        ModelSamplingAdvanced = _get_model_sampling_advanced_class()
+        model_sampling = ModelSamplingAdvanced(model_config)
         model_sampling.set_parameters(shift=shift, multiplier=multiplier)
         m.add_object_patch("model_sampling", model_sampling)
         return (m, )
@@ -149,6 +146,7 @@ class ModelSamplingAuraFlow(ModelSamplingSD3):
     FUNCTION = "patch_aura"
 
     def patch_aura(self, model, shift):
+        # Using previously optimized patch method
         return self.patch(model, shift, multiplier=1.0)
 
 class ModelSamplingFlux:
@@ -317,6 +315,20 @@ class ModelComputeDtype:
         m = model.clone()
         m.set_model_compute_dtype(node_helpers.string_to_torch_dtype(dtype))
         return (m, )
+
+
+# Cache the dynamically-created class so we don't redefine it each call
+def _get_model_sampling_advanced_class():
+    # Only define once, then reuse
+    try:
+        return _get_model_sampling_advanced_class._cached
+    except AttributeError:
+        sampling_base = comfy.model_sampling.ModelSamplingDiscreteFlow
+        sampling_type = comfy.model_sampling.CONST
+        class ModelSamplingAdvanced(sampling_base, sampling_type):
+            pass
+        _get_model_sampling_advanced_class._cached = ModelSamplingAdvanced
+        return ModelSamplingAdvanced
 
 
 NODE_CLASS_MAPPINGS = {
