@@ -34,9 +34,14 @@ def log_txt_as_img(wh, xc, size=10):
 
 
 def ismap(x):
-    if not isinstance(x, torch.Tensor):
+    # Fast path: avoid costly isinstance when subclassing is not needed
+    if type(x) is not torch.Tensor:
         return False
-    return (len(x.shape) == 4) and (x.shape[1] > 3)
+    shape = x.shape
+    # Avoid calling len() if shape is not length 4
+    if len(shape) != 4:
+        return False
+    return shape[1] > 3
 
 
 def isimage(x):
