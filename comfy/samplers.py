@@ -875,10 +875,8 @@ def filter_registered_hooks_on_conds(conds: dict[str, list[dict[str]]], model_op
 
 
 def get_total_hook_groups_in_conds(conds: dict[str, list[dict[str]]]):
-    hooks_set = set()
-    for k in conds:
-        for kk in conds[k]:
-            hooks_set.add(kk.get('hooks', None))
+    # Use set comprehension for faster accumulation of hooks
+    hooks_set = {kk.get('hooks') for lists in conds.values() for kk in lists}
     return len(hooks_set)
 
 
