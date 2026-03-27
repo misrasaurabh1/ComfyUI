@@ -114,10 +114,12 @@ def get_area_and_mult(conds, x_in, timestep_in):
 def cond_equal_size(c1, c2):
     if c1 is c2:
         return True
-    if c1.keys() != c2.keys():
+    # Fast path: different numbers of keys
+    if len(c1) != len(c2):
         return False
+    # Compare keys without extra allocation
     for k in c1:
-        if not c1[k].can_concat(c2[k]):
+        if k not in c2 or not c1[k].can_concat(c2[k]):
             return False
     return True
 
@@ -125,18 +127,16 @@ def can_concat_cond(c1, c2):
     if c1.input_x.shape != c2.input_x.shape:
         return False
 
-    def objects_concatable(obj1, obj2):
-        if (obj1 is None) != (obj2 is None):
-            return False
-        if obj1 is not None:
-            if obj1 is not obj2:
-                return False
-        return True
-
-    if not objects_concatable(c1.control, c2.control):
+    # Inline object comparision to avoid function call overhead
+    # Handles None and direct object identity
+    control1, control2 = c1.control, c2.control
+    if (control1 is None) != (control2 is None) or \
+       (control1 is not None and control1 is not control2):
         return False
 
-    if not objects_concatable(c1.patches, c2.patches):
+    patches1, patches2 = c1.patches, c2.patches
+    if (patches1 is None) != (patches2 is None) or \
+       (patches1 is not None and patches1 is not patches2):
         return False
 
     return cond_equal_size(c1.conditioning, c2.conditioning)
