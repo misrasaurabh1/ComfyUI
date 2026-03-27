@@ -330,8 +330,7 @@ class CheckLazyMixin:
 
         This basic mixin impl. requires all inputs.
 
-        :kwargs: All node inputs will be included here.  If the input is ``None``, it should be assumed that it has not yet been evaluated.  \
-            When using ``INPUT_IS_LIST = True``, unevaluated will instead be ``(None,)``.
+        :kwargs: All node inputs will be included here.  If the input is ``None``, it should be assumed that it has not yet been evaluated.              When using ``INPUT_IS_LIST = True``, unevaluated will instead be ``(None,)``.
 
         Params should match the nodes execution ``FUNCTION`` (self, and all inputs by name).
         Will be executed repeatedly until it returns an empty list, or all requested items were already evaluated (and sent as params).
@@ -339,8 +338,8 @@ class CheckLazyMixin:
         Comfy Docs: https://docs.comfy.org/custom-nodes/backend/lazy_evaluation#defining-check-lazy-status
         """
 
-        need = [name for name in kwargs if kwargs[name] is None]
-        return need
+        # Using generator and direct .items() iteration for slight performance gain
+        return [name for name, value in kwargs.items() if value is None]
 
 
 class FileLocator(TypedDict):
