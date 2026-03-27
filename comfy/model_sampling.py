@@ -306,16 +306,17 @@ class StableCascadeSampling(ModelSamplingDiscrete):
 
     def set_parameters(self, shift=1.0, cosine_s=8e-3):
         self.shift = shift
-        self.cosine_s = torch.tensor(cosine_s)
+        # To avoid device mismatch, always use float32 for tensor creation
+        self.cosine_s = torch.tensor(cosine_s, dtype=torch.float32)
         self._init_alpha_cumprod = torch.cos(self.cosine_s / (1 + self.cosine_s) * torch.pi * 0.5) ** 2
 
         #This part is just for compatibility with some schedulers in the codebase
         self.num_timesteps = 10000
-        sigmas = torch.empty((self.num_timesteps), dtype=torch.float32)
-        for x in range(self.num_timesteps):
-            t = (x + 1) / self.num_timesteps
-            sigmas[x] = self.sigma(t)
 
+        # Vectorize the computation of t and sigmas for improved performance.
+        ts = torch.linspace(1, self.num_timesteps, self.num_timesteps, dtype=torch.float32) / self.num_timesteps
+
+        sigmas = self._sigmas_vectorized(ts)
         self.set_sigmas(sigmas)
 
     def sigma(self, timestep):
@@ -345,6 +346,35 @@ class StableCascadeSampling(ModelSamplingDiscrete):
 
         percent = 1.0 - percent
         return self.sigma(torch.tensor(percent))
+
+    def _sigmas_vectorized(self, t):
+        """
+        Vectorized sigma computation, matches StableCascadeSampling.sigma behavior.
+        """
+        s = self.cosine_s
+        sc = self._init_alpha_cumprod
+        shift = self.shift
+
+        # replicate the logic of StableCascadeSampling.sigma
+        # torch.pi is already float32
+        t_tensor = t
+        # alpha_cumprod calculation
+        angle = (t_tensor + s) / (1 + s) * torch.pi * 0.5
+        alpha_cumprod = (torch.cos(angle) ** 2) / sc
+
+        if shift != 1.0:
+            var = alpha_cumprod
+            # add small epsilon to avoid division by zero
+            # logSNR = log(var / (1 - var))
+            logSNR = (var / (1 - var + 1e-16)).log()
+            logSNR += 2 * torch.log(torch.tensor(1.0 / shift, dtype=torch.float32))
+            alpha_cumprod = logSNR.sigmoid()
+
+        # clamp to [0.0001, 0.9999]
+        alpha_cumprod = alpha_cumprod.clamp(0.0001, 0.9999)
+
+        sigmas = ((1 - alpha_cumprod) / alpha_cumprod).sqrt()
+        return sigmas
 
 
 def flux_time_shift(mu: float, sigma: float, t):
