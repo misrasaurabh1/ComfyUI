@@ -404,13 +404,20 @@ def sample_dpm_2_ancestral_RF(model, x, sigmas, extra_args=None, callback=None, 
 def linear_multistep_coeff(order, t, i, j):
     if order - 1 > i:
         raise ValueError(f'Order {order} too high for step {i}')
+    
+    # Precompute factors to use inside the integrand
+    precomputed_factors = []
+    for k in range(order):
+        if j != k:
+            factor = 1 / (t[i - j] - t[i - k])
+            precomputed_factors.append((k, factor))
+    
     def fn(tau):
         prod = 1.
-        for k in range(order):
-            if j == k:
-                continue
-            prod *= (tau - t[i - k]) / (t[i - j] - t[i - k])
+        for k, factor in precomputed_factors:
+            prod *= (tau - t[i - k]) * factor
         return prod
+    
     return integrate.quad(fn, t[i], t[i + 1], epsrel=1e-4)[0]
 
 
