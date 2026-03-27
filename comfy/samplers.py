@@ -125,18 +125,14 @@ def can_concat_cond(c1, c2):
     if c1.input_x.shape != c2.input_x.shape:
         return False
 
-    def objects_concatable(obj1, obj2):
-        if (obj1 is None) != (obj2 is None):
-            return False
-        if obj1 is not None:
-            if obj1 is not obj2:
-                return False
-        return True
-
-    if not objects_concatable(c1.control, c2.control):
+    if (c1.control is None) != (c2.control is None):
+        return False
+    if c1.control is not None and c1.control is not c2.control:
         return False
 
-    if not objects_concatable(c1.patches, c2.patches):
+    if (c1.patches is None) != (c2.patches is None):
+        return False
+    if c1.patches is not None and c1.patches is not c2.patches:
         return False
 
     return cond_equal_size(c1.conditioning, c2.conditioning)
