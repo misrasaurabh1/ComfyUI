@@ -176,11 +176,13 @@ class ModelSamplingDiscrete(torch.nn.Module):
         return dists.abs().argmin(dim=0).view(sigma.shape).to(sigma.device)
 
     def sigma(self, timestep):
-        t = torch.clamp(timestep.float().to(self.log_sigmas.device), min=0, max=(len(self.sigmas) - 1))
-        low_idx = t.floor().long()
-        high_idx = t.ceil().long()
-        w = t.frac()
-        log_sigma = (1 - w) * self.log_sigmas[low_idx] + w * self.log_sigmas[high_idx]
+        device = self.log_sigmas.device
+        t = torch.clamp(timestep.float().to(device), min=0, max=len(self.sigmas) - 1)
+        low_idx = t.floor().to(torch.long)
+        high_idx = t.ceil().to(torch.long)
+        w = t - low_idx  # Equivalent to t.frac()
+
+        log_sigma = torch.lerp(self.log_sigmas[low_idx], self.log_sigmas[high_idx], w)
         return log_sigma.exp().to(timestep.device)
 
     def percent_to_sigma(self, percent):
