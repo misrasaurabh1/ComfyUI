@@ -16,6 +16,9 @@ from ..attention import SpatialTransformer, SpatialVideoTransformer, default
 from comfy.ldm.util import exists
 import comfy.patcher_extension
 import comfy.ops
+import math
+import torch
+
 ops = comfy.ops.disable_weight_init
 
 from ..sdpose import HeatmapHead
@@ -360,9 +363,18 @@ class Timestep(nn.Module):
     def __init__(self, dim):
         super().__init__()
         self.dim = dim
+        half = dim // 2
+        self.freqs = torch.exp(-math.log(10000) * torch.arange(start=0, end=half, dtype=torch.float32) / half)
 
     def forward(self, t):
-        return timestep_embedding(t, self.dim)
+        if t.device != self.freqs.device:
+            self.freqs = self.freqs.to(t.device)
+        half = self.dim // 2
+        args = t[:, None].float() * self.freqs[None]
+        embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
+        if self.dim % 2:
+            embedding = torch.cat([embedding, torch.zeros_like(embedding[:, :1])], dim=-1)
+        return embedding
 
 def apply_control(h, control, name):
     if control is not None and name in control and len(control[name]) > 0:
