@@ -331,10 +331,17 @@ class StableCascadeSampling(ModelSamplingDiscrete):
         return ((1 - alpha_cumprod) / alpha_cumprod) ** 0.5
 
     def timestep(self, sigma):
-        var = 1 / ((sigma * sigma) + 1)
-        var = var.clamp(0, 1.0)
-        s, min_var = self.cosine_s.to(var.device), self._init_alpha_cumprod.to(var.device)
-        t = (((var * min_var) ** 0.5).acos() / (torch.pi * 0.5)) * (1 + s) - s
+        sigma_squared = sigma * sigma 
+        var = 1 / (sigma_squared + 1)
+        var_clamped = var.clamp(0, 1.0)
+        
+        cosine_s_device = self.cosine_s.to(var_clamped.device)
+        min_var_device = self._init_alpha_cumprod.to(var_clamped.device)
+        
+        var_sqrt = (var_clamped * min_var_device).sqrt()
+        acos_result = var_sqrt.acos()
+        
+        t = (acos_result / (torch.pi * 0.5)) * (1 + cosine_s_device) - cosine_s_device
         return t
 
     def percent_to_sigma(self, percent):
