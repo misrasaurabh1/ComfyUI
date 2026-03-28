@@ -82,10 +82,11 @@ def default_noise_sampler(x, seed=None):
 
         generator = torch.Generator(device=x.device)
         generator.manual_seed(seed)
-    else:
-        generator = None
 
-    return lambda sigma, sigma_next: torch.randn(x.size(), dtype=x.dtype, layout=x.layout, device=x.device, generator=generator)
+    def noise(sigma, sigma_next):
+        return torch.randn(x.size(), dtype=x.dtype, layout=x.layout, device=x.device, generator=generator)
+
+    return noise
 
 
 class BatchedBrownianTree:
