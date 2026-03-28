@@ -2,6 +2,9 @@ from __future__ import annotations
 from .k_diffusion import sampling as k_diffusion_sampling
 from .extra_samplers import uni_pc
 from typing import TYPE_CHECKING, Callable, NamedTuple
+import math
+import torch
+
 if TYPE_CHECKING:
     from comfy.model_patcher import ModelPatcher
     from comfy.model_base import BaseModel
@@ -413,19 +416,14 @@ def simple_scheduler(model_sampling, steps):
 
 def ddim_scheduler(model_sampling, steps):
     s = model_sampling
-    sigs = []
     x = 1
-    if math.isclose(float(s.sigmas[x]), 0, abs_tol=0.00001):
-        steps += 1
-        sigs = []
-    else:
-        sigs = [0.0]
+    steps_incremented = steps + 1 if math.isclose(float(s.sigmas[x]), 0, abs_tol=0.00001) else steps
 
-    ss = max(len(s.sigmas) // steps, 1)
-    while x < len(s.sigmas):
-        sigs += [float(s.sigmas[x])]
-        x += ss
-    sigs = sigs[::-1]
+    ss = max(len(s.sigmas) // steps_incremented, 1)
+    
+    # Use list comprehension and slice to gather the sigmas quickly
+    sigs = [float(s.sigmas[i]) for i in range(x, len(s.sigmas), ss)][::-1]
+    
     return torch.FloatTensor(sigs)
 
 def normal_scheduler(model_sampling, steps, sgm=False, floor=False):
