@@ -655,35 +655,29 @@ def apply_empty_x_to_equal_area(conds, uncond, name, uncond_fill_func):
     cond_other = []
     uncond_cnets = []
     uncond_other = []
-    for t in range(len(conds)):
-        x = conds[t]
-        if 'area' not in x:
-            if name in x and x[name] is not None:
-                cond_cnets.append(x[name])
-            else:
-                cond_other.append((x, t))
-    for t in range(len(uncond)):
-        x = uncond[t]
-        if 'area' not in x:
-            if name in x and x[name] is not None:
-                uncond_cnets.append(x[name])
-            else:
-                uncond_other.append((x, t))
 
-    if len(uncond_cnets) > 0:
+    # Process `conds` and `uncond` simultaneously using comprehensions where possible
+    for t, x in enumerate(conds):
+        if 'area' not in x:
+            (cond_cnets if name in x and x[name] is not None else cond_other).append(x if name in x and x[name] is not None else (x, t))
+
+    for t, x in enumerate(uncond):
+        if 'area' not in x:
+            (uncond_cnets if name in x and x[name] is not None else uncond_other).append(x if name in x and x[name] is not None else (x, t))
+
+    # Return early if uncond_cnets are not empty
+    if uncond_cnets:
         return
 
+    uncond_other_len = len(uncond_other)
     for x in range(len(cond_cnets)):
-        temp = uncond_other[x % len(uncond_other)]
-        o = temp[0]
-        if name in o and o[name] is not None:
-            n = o.copy()
-            n[name] = uncond_fill_func(cond_cnets, x)
-            uncond += [n]
-        else:
-            n = o.copy()
-            n[name] = uncond_fill_func(cond_cnets, x)
-            uncond[temp[1]] = n
+        temp_tuple = uncond_other[x % uncond_other_len]
+        o = temp_tuple[0]
+        index = temp_tuple[1]
+        
+        n = o.copy()
+        n[name] = uncond_fill_func(cond_cnets, x)
+        uncond.append(n) if name in o and o[name] is not None else uncond.__setitem__(index, n)
 
 def encode_model_conds(model_function, conds, noise, device, prompt_type, **kwargs):
     for t in range(len(conds)):
