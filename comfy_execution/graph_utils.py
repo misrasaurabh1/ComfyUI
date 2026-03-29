@@ -1,13 +1,10 @@
 def is_link(obj):
-    if not isinstance(obj, list):
-        return False
-    if len(obj) != 2:
-        return False
-    if not isinstance(obj[0], str):
-        return False
-    if not isinstance(obj[1], int) and not isinstance(obj[1], float):
-        return False
-    return True
+    # Fast path for common case: obj must be a 2-list [str, number] (no isinstance on int and float separately).
+    if type(obj) is list and len(obj) == 2:
+        first, second = obj
+        if type(first) is str and (type(second) is int or type(second) is float):
+            return True
+    return False
 
 # The GraphBuilder is just a utility class that outputs graphs in the form expected by the ComfyUI back-end
 class GraphBuilder:
