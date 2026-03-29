@@ -62,7 +62,8 @@ def get_sigmas_laplace(n, sigma_min, sigma_max, mu=0., beta=0.5, device='cpu'):
 
 def to_d(x, sigma, denoised):
     """Converts a denoiser output to a Karras ODE derivative."""
-    return (x - denoised) / utils.append_dims(sigma, x.ndim)
+    sigma_expanded = utils.append_dims(sigma, x.ndim)
+    return (x - denoised) / sigma_expanded
 
 
 def get_ancestral_step(sigma_from, sigma_to, eta=1.):
@@ -191,24 +192,36 @@ def sample_euler(model, x, sigmas, extra_args=None, callback=None, disable=None,
     """Implements Algorithm 2 (Euler steps) from Karras et al. (2022)."""
     extra_args = {} if extra_args is None else extra_args
     s_in = x.new_ones([x.shape[0]])
-    for i in trange(len(sigmas) - 1, disable=disable):
-        if s_churn > 0:
-            gamma = min(s_churn / (len(sigmas) - 1), 2 ** 0.5 - 1) if s_tmin <= sigmas[i] <= s_tmax else 0.
-            sigma_hat = sigmas[i] * (gamma + 1)
+
+    noise_shape = x.shape  # Cache the shape of x for noise generation
+    sigma_len = len(sigmas)  # Cache the length of sigmas
+
+    for i in trange(sigma_len - 1, disable=disable):
+        sigma_current = sigmas[i]
+        sigma_next = sigmas[i + 1]
+
+        if s_churn > 0 and s_tmin <= sigma_current <= s_tmax:
+            gamma = min(s_churn / (sigma_len - 1), 2 ** 0.5 - 1)
+            sigma_hat = sigma_current * (gamma + 1)
+            noise_factor = torch.sqrt(sigma_hat ** 2 - sigma_current ** 2)
         else:
             gamma = 0
-            sigma_hat = sigmas[i]
+            sigma_hat = sigma_current
+            noise_factor = None
 
         if gamma > 0:
-            eps = torch.randn_like(x) * s_noise
-            x = x + eps * (sigma_hat ** 2 - sigmas[i] ** 2) ** 0.5
+            eps = torch.randn(noise_shape, device=x.device) * s_noise
+            x.addcmul_(eps, noise_factor)
+
         denoised = model(x, sigma_hat * s_in, **extra_args)
         d = to_d(x, sigma_hat, denoised)
+
         if callback is not None:
-            callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigma_hat, 'denoised': denoised})
-        dt = sigmas[i + 1] - sigma_hat
-        # Euler method
-        x = x + d * dt
+            callback({'x': x, 'i': i, 'sigma': sigma_current, 'sigma_hat': sigma_hat, 'denoised': denoised})
+
+        dt = sigma_next - sigma_hat
+        x.addcmul_(d, dt)
+
     return x
 
 
