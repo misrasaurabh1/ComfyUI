@@ -319,30 +319,28 @@ class SDClipModel(torch.nn.Module, ClipTokenWeightEncoder):
 
 def parse_parentheses(string):
     result = []
-    current_item = ""
+    current_item = []
     nesting_level = 0
     for char in string:
         if char == "(":
             if nesting_level == 0:
                 if current_item:
-                    result.append(current_item)
-                    current_item = "("
-                else:
-                    current_item = "("
+                    result.append(''.join(current_item))
+                    current_item = []
+                current_item.append("(")
             else:
-                current_item += char
+                current_item.append("(")
             nesting_level += 1
         elif char == ")":
             nesting_level -= 1
+            current_item.append(")")
             if nesting_level == 0:
-                result.append(current_item + ")")
-                current_item = ""
-            else:
-                current_item += char
+                result.append(''.join(current_item))
+                current_item = []
         else:
-            current_item += char
+            current_item.append(char)
     if current_item:
-        result.append(current_item)
+        result.append(''.join(current_item))
     return result
 
 def token_weights(string, current_weight):
