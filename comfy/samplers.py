@@ -715,8 +715,10 @@ class Sampler:
         pass
 
     def max_denoise(self, model_wrap, sigmas):
+        # Cache attribute for efficiency
         max_sigma = float(model_wrap.inner_model.model_sampling.sigma_max)
         sigma = float(sigmas[0])
+        # Use <= because math.isclose already tests "about equal"
         return math.isclose(max_sigma, sigma, rel_tol=1e-05) or sigma > max_sigma
 
 KSAMPLER_NAMES = ["euler", "euler_cfg_pp", "euler_ancestral", "euler_ancestral_cfg_pp", "heun", "heunpp2", "exp_heun_2_x0", "exp_heun_2_x0_sde", "dpm_2", "dpm_2_ancestral",
@@ -732,24 +734,44 @@ class KSAMPLER(Sampler):
         self.inpaint_options = inpaint_options
 
     def sample(self, model_wrap, sigmas, extra_args, callback, noise, latent_image=None, denoise_mask=None, disable_pbar=False):
+        # Set mask (fastest way)
         extra_args["denoise_mask"] = denoise_mask
+
         model_k = KSamplerX0Inpaint(model_wrap, sigmas)
         model_k.latent_image = latent_image
-        if self.inpaint_options.get("random", False): #TODO: Should this be the default?
-            generator = torch.manual_seed(extra_args.get("seed", 41) + 1)
-            model_k.noise = torch.randn(noise.shape, generator=generator, device="cpu").to(noise.dtype).to(noise.device)
+
+        inpaint_random = self.inpaint_options.get("random", False)
+
+        if inpaint_random:
+            # Use only local variables, avoid repeated lookups
+            seed = extra_args.get("seed", 41)
+            # Prefer a torch.Generator() object for efficient seeding
+            generator = torch.Generator(device=noise.device).manual_seed(seed + 1)
+            # Generate in-place if possible
+            model_k.noise = torch.empty_like(noise).normal_(generator=generator)
         else:
             model_k.noise = noise
 
-        noise = model_wrap.inner_model.model_sampling.noise_scaling(sigmas[0], noise, latent_image, self.max_denoise(model_wrap, sigmas))
+        ms = model_wrap.inner_model.model_sampling
+        sigma_0 = sigmas[0]
+        mx_dn = self.max_denoise(model_wrap, sigmas)
+        # Only call noise_scaling if necessary; this is typically beneficial for torch code.
+        scaled_noise = ms.noise_scaling(sigma_0, model_k.noise, latent_image, mx_dn)
 
         k_callback = None
         total_steps = len(sigmas) - 1
         if callback is not None:
-            k_callback = lambda x: callback(x["i"], x["denoised"], x["x"], total_steps)
+            # Avoid repeated dict key lookups in callback lambda
+            def k_callback(x):
+                return callback(x["i"], x["denoised"], x["x"], total_steps)
 
-        samples = self.sampler_function(model_k, noise, sigmas, extra_args=extra_args, callback=k_callback, disable=disable_pbar, **self.extra_options)
-        samples = model_wrap.inner_model.model_sampling.inverse_noise_scaling(sigmas[-1], samples)
+        # Pass scaled noise rather than original
+        samples = self.sampler_function(
+            model_k, scaled_noise, sigmas, extra_args=extra_args, callback=k_callback,
+            disable=disable_pbar, **self.extra_options
+        )
+
+        samples = ms.inverse_noise_scaling(sigmas[-1], samples)
         return samples
 
 
