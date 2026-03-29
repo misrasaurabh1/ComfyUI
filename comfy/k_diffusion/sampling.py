@@ -53,9 +53,18 @@ def get_sigmas_laplace(n, sigma_min, sigma_max, mu=0., beta=0.5, device='cpu'):
     """Constructs the noise schedule proposed by Tiankai et al. (2024). """
     epsilon = 1e-5 # avoid log(0)
     x = torch.linspace(0, 1, n, device=device)
-    clamp = lambda x: torch.clamp(x, min=sigma_min, max=sigma_max)
-    lmb = mu - beta * torch.sign(0.5-x) * torch.log(1 - 2 * torch.abs(0.5-x) + epsilon)
-    sigmas = clamp(torch.exp(lmb))
+    
+    # Calculate values once and reuse
+    delta = 0.5 - x
+    abs_delta = torch.abs(delta)
+    sign_delta = torch.sign(delta)
+    
+    # Calculate lmb in one step
+    lmb = mu - beta * sign_delta * torch.log(1 - 2 * abs_delta + epsilon)
+    
+    # Applying sigma_min and sigma_max bounds directly
+    sigmas = torch.exp(lmb).clamp(min=sigma_min, max=sigma_max)
+    
     return sigmas
 
 
