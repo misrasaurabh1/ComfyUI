@@ -60,7 +60,18 @@ def mean_flat(tensor):
     https://github.com/openai/guided-diffusion/blob/27c20a8fab9cb472df5d6bdd6c8d11c8f430b924/guided_diffusion/nn.py#L86
     Take the mean over all non-batch dimensions.
     """
-    return tensor.mean(dim=list(range(1, len(tensor.shape))))
+    # Use tuple instead of list for dims, which is slightly faster in PyTorch and saves memory
+    # Faster to cache shape length in a local
+    n_dims = tensor.ndim
+    if n_dims == 2:
+        return tensor.mean(dim=1)
+    elif n_dims == 3:
+        return tensor.mean(dim=(1,2))
+    elif n_dims == 4:
+        return tensor.mean(dim=(1,2,3))
+    else:
+        # for higher dimensions, still use tuple
+        return tensor.mean(dim=tuple(range(1, n_dims)))
 
 
 def count_params(model, verbose=False):
