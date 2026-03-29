@@ -207,10 +207,10 @@ def transformers_convert(sd, prefix_from, prefix_to, number):
         "{}ln_final.bias": "{}final_layer_norm.bias",
     }
 
-    for k in keys_to_replace:
+    for k, v in keys_to_replace.items():
         x = k.format(prefix_from)
         if x in sd:
-            sd[keys_to_replace[k].format(prefix_to)] = sd.pop(x)
+            sd[v.format(prefix_to)] = sd.pop(x)
 
     resblock_to_replace = {
         "ln_1": "layer_norm1",
@@ -220,23 +220,35 @@ def transformers_convert(sd, prefix_from, prefix_to, number):
         "attn.out_proj": "self_attn.out_proj",
     }
 
-    for resblock in range(number):
-        for x in resblock_to_replace:
-            for y in ["weight", "bias"]:
-                k = "{}transformer.resblocks.{}.{}.{}".format(prefix_from, resblock, x, y)
-                k_to = "{}encoder.layers.{}.{}.{}".format(prefix_to, resblock, resblock_to_replace[x], y)
-                if k in sd:
-                    sd[k_to] = sd.pop(k)
+    proj_replacements = ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj"]
 
-        for y in ["weight", "bias"]:
-            k_from = "{}transformer.resblocks.{}.attn.in_proj_{}".format(prefix_from, resblock, y)
-            if k_from in sd:
-                weights = sd.pop(k_from)
-                shape_from = weights.shape[0] // 3
-                for x in range(3):
-                    p = ["self_attn.q_proj", "self_attn.k_proj", "self_attn.v_proj"]
-                    k_to = "{}encoder.layers.{}.{}.{}".format(prefix_to, resblock, p[x], y)
-                    sd[k_to] = weights[shape_from*x:shape_from*(x + 1)]
+    for resblock in range(number):
+        block_prefix = f"{prefix_from}transformer.resblocks.{resblock}."
+        block_dest_prefix = f"{prefix_to}encoder.layers.{resblock}."
+
+        for x, y in resblock_to_replace.items():
+            k_weight = f"{block_prefix}{x}.weight"
+            k_bias = f"{block_prefix}{x}.bias"
+            k_to_weight = f"{block_dest_prefix}{y}.weight"
+            k_to_bias = f"{block_dest_prefix}{y}.bias"
+
+            if k_weight in sd:
+                sd[k_to_weight] = sd.pop(k_weight)
+            if k_bias in sd:
+                sd[k_to_bias] = sd.pop(k_bias)
+
+        k_from_weight = f"{block_prefix}attn.in_proj_weight"
+        k_from_bias = f"{block_prefix}attn.in_proj_bias"
+        if k_from_weight in sd:
+            weights = sd.pop(k_from_weight)
+            shape_from = weights.shape[0] // 3
+            for idx, proj_replacement in enumerate(proj_replacements):
+                sd[f"{block_dest_prefix}{proj_replacement}.weight"] = weights[shape_from*idx:shape_from*(idx+1)]
+        if k_from_bias in sd:
+            biases = sd.pop(k_from_bias)
+            shape_from = biases.shape[0] // 3
+            for idx, proj_replacement in enumerate(proj_replacements):
+                sd[f"{block_dest_prefix}{proj_replacement}.bias"] = biases[shape_from*idx:shape_from*(idx+1)]
 
     return sd
 
