@@ -11,6 +11,7 @@ from comfy.ldm.modules.attention import optimized_attention
 import comfy.ops
 import comfy.patcher_extension
 import comfy.ldm.common_dit
+from functools import lru_cache
 
 def modulate(x, shift, scale):
     return x * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1)
@@ -284,11 +285,12 @@ class TimestepEmbedder(nn.Module):
 
     @staticmethod
     def timestep_embedding(t, dim, max_period=10000):
+        # Get device and dtype info efficiently for cache
+        device_str = str(t.device)
+        dtype_str = str(t.dtype).split('.')[-1]
         half = dim // 2
-        freqs = 1000 * torch.exp(
-            -math.log(max_period) * torch.arange(start=0, end=half) / half
-        ).to(t.device)
-        args = t[:, None] * freqs[None]
+        freqs = TimestepEmbedder._cached_freqs(dim, max_period, device_str, dtype_str)
+        args = t[:, None] * freqs[None, :]
         embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
         if dim % 2:
             embedding = torch.cat(
@@ -301,6 +303,18 @@ class TimestepEmbedder(nn.Module):
         t_freq = self.timestep_embedding(t, self.frequency_embedding_size).to(dtype)
         t_emb = self.mlp(t_freq)
         return t_emb
+
+    @staticmethod
+    @lru_cache(maxsize=16)
+    def _cached_freqs(dim, max_period, device_str, dtype_str):
+        # Precompute frequency tensor for given dim/max_period/devices.
+        half = dim // 2
+        log_max_period = -math.log(max_period)
+        # Create tensor on CPU first then to correct device
+        arange = torch.arange(start=0, end=half, device='cpu', dtype=torch.float32)
+        freqs = 1000 * torch.exp(log_max_period * arange / half)
+        freqs = freqs.to(device=device_str, dtype=getattr(torch, dtype_str))
+        return freqs
 
 
 class MMDiT(nn.Module):
