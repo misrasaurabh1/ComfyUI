@@ -1,13 +1,10 @@
 def is_link(obj):
-    if not isinstance(obj, list):
-        return False
-    if len(obj) != 2:
-        return False
-    if not isinstance(obj[0], str):
-        return False
-    if not isinstance(obj[1], int) and not isinstance(obj[1], float):
-        return False
-    return True
+    # Fast path checks for link-like objects: [str, (int/float)]
+    if type(obj) is list and len(obj) == 2:
+        fst, snd = obj
+        if type(fst) is str and (type(snd) is int or type(snd) is float):
+            return True
+    return False
 
 # The GraphBuilder is just a utility class that outputs graphs in the form expected by the ComfyUI back-end
 class GraphBuilder:
@@ -115,26 +112,38 @@ class Node:
 def add_graph_prefix(graph, outputs, prefix):
     # Change the node IDs and any internal links
     new_graph = {}
+    is_link_local = is_link
+    pfx = prefix
+
     for node_id, node_info in graph.items():
-        # Make sure the added nodes have unique IDs
-        new_node_id = prefix + node_id
-        new_node = { "class_type": node_info["class_type"], "inputs": {} }
-        for input_name, input_value in node_info.get("inputs", {}).items():
-            if is_link(input_value):
-                new_node["inputs"][input_name] = [prefix + input_value[0], input_value[1]]
-            else:
-                new_node["inputs"][input_name] = input_value
+        # Compose new id once
+        new_node_id = pfx + node_id
+        input_dict = node_info.get("inputs")
+        if not input_dict:
+            # No inputs or inputs is empty
+            new_node = {"class_type": node_info["class_type"], "inputs": {}}
+        else:
+            # Preallocate inputs dict and do in-place assignment
+            inputs = {}
+            for input_name, input_value in input_dict.items():
+                if is_link_local(input_value):
+                    # Avoid repeated attribute and item lookups
+                    in0 = input_value[0]
+                    in1 = input_value[1]
+                    inputs[input_name] = [pfx + in0, in1]
+                else:
+                    inputs[input_name] = input_value
+            new_node = {"class_type": node_info["class_type"], "inputs": inputs}
         new_graph[new_node_id] = new_node
 
-    # Change the node IDs in the outputs
-    new_outputs = []
-    for n in range(len(outputs)):
-        output = outputs[n]
-        if is_link(output):
-            new_outputs.append([prefix + output[0], output[1]])
-        else:
-            new_outputs.append(output)
-
+    # Preallocate outputs with list comprehension
+    append_pfx = pfx
+    is_link_outputs = is_link_local
+    # This avoids the repeated attribute lookups and in-loop checking; branch into list comp
+    new_outputs = [
+        [append_pfx + out[0], out[1]] if is_link_outputs(out) else out
+        for out in outputs
+    ]
     return new_graph, tuple(new_outputs)
 
 class ExecutionBlocker:
