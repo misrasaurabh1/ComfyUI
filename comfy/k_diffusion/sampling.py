@@ -976,28 +976,60 @@ def sample_dpmpp_sde_gpu(model, x, sigmas, extra_args=None, callback=None, disab
 
 
 def DDPMSampler_step(x, sigma, sigma_prev, noise, noise_sampler):
-    alpha_cumprod = 1 / ((sigma * sigma) + 1)
-    alpha_cumprod_prev = 1 / ((sigma_prev * sigma_prev) + 1)
-    alpha = (alpha_cumprod / alpha_cumprod_prev)
-
-    mu = (1.0 / alpha).sqrt() * (x - (1 - alpha) * noise / (1 - alpha_cumprod).sqrt())
+    # Precalculate constants to save computation time
+    sigma_sq_plus_one = sigma ** 2 + 1
+    sigma_prev_sq_plus_one = sigma_prev ** 2 + 1
+    
+    alpha_cumprod = 1 / sigma_sq_plus_one
+    alpha_cumprod_prev = 1 / sigma_prev_sq_plus_one
+    alpha = alpha_cumprod / alpha_cumprod_prev
+    
+    # sqrt is computationally expensive, calculate once and reuse
+    sqrt_alpha = torch.sqrt(1.0 / alpha)
+    sqrt_alpha_cumprod = torch.sqrt(1.0 - alpha_cumprod)
+    sqrt_alpha_cumprod_prev = torch.sqrt(1.0 - alpha_cumprod_prev)
+    sqrt_one_minus_alpha = torch.sqrt((1 - alpha) * (1 - alpha_cumprod_prev) / (1 - alpha_cumprod))
+    
+    # Rearrange calculations to minimize redundant operations
+    mu = sqrt_alpha * (x - (1 - alpha) * noise / sqrt_alpha_cumprod)
+    
     if sigma_prev > 0:
-        mu += ((1 - alpha) * (1. - alpha_cumprod_prev) / (1. - alpha_cumprod)).sqrt() * noise_sampler(sigma, sigma_prev)
+        mu += sqrt_one_minus_alpha * noise_sampler(sigma, sigma_prev)
+    
     return mu
 
 def generic_step_sampler(model, x, sigmas, extra_args=None, callback=None, disable=None, noise_sampler=None, step_function=None):
-    extra_args = {} if extra_args is None else extra_args
+    extra_args = extra_args or {}
     seed = extra_args.get("seed", None)
     noise_sampler = default_noise_sampler(x, seed=seed) if noise_sampler is None else noise_sampler
-    s_in = x.new_ones([x.shape[0]])
+    s_in = torch.ones([x.shape[0]], device=x.device, dtype=x.dtype)
 
     for i in trange(len(sigmas) - 1, disable=disable):
-        denoised = model(x, sigmas[i] * s_in, **extra_args)
+        # Precalculate constants to reduce redundant computation
+        sigmas_i = sigmas[i]
+        sigmas_i_next = sigmas[i + 1]
+        sigmas_i_sq_plus_one = sigmas_i ** 2 + 1
+        sqrt_sigmas_i_sq_plus_one = torch.sqrt(sigmas_i_sq_plus_one)
+        
+        # Directly pass in scaled sigmas
+        denoised = model(x, sigmas_i * s_in, **extra_args)
+        
         if callback is not None:
-            callback({'x': x, 'i': i, 'sigma': sigmas[i], 'sigma_hat': sigmas[i], 'denoised': denoised})
-        x = step_function(x / torch.sqrt(1.0 + sigmas[i] ** 2.0), sigmas[i], sigmas[i + 1], (x - denoised) / sigmas[i], noise_sampler)
-        if sigmas[i + 1] != 0:
-            x *= torch.sqrt(1.0 + sigmas[i + 1] ** 2.0)
+            callback({
+                'x': x, 
+                'i': i, 
+                'sigma': sigmas_i, 
+                'sigma_hat': sigmas_i, 
+                'denoised': denoised
+            })
+        
+        scaled_x = x / sqrt_sigmas_i_sq_plus_one
+        noise = (scaled_x - denoised) / sigmas_i
+        x = step_function(scaled_x, sigmas_i, sigmas_i_next, noise, noise_sampler)
+        
+        if sigmas_i_next != 0:
+            x *= torch.sqrt(sigmas_i_next ** 2 + 1)
+    
     return x
 
 
