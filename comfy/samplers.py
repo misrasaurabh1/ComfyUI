@@ -717,7 +717,10 @@ class Sampler:
     def max_denoise(self, model_wrap, sigmas):
         max_sigma = float(model_wrap.inner_model.model_sampling.sigma_max)
         sigma = float(sigmas[0])
-        return math.isclose(max_sigma, sigma, rel_tol=1e-05) or sigma > max_sigma
+        # Shortcut: first check sigma > max_sigma, else do math.isclose only if needed
+        if sigma > max_sigma:
+            return True
+        return math.isclose(max_sigma, sigma, rel_tol=1e-05)
 
 KSAMPLER_NAMES = ["euler", "euler_cfg_pp", "euler_ancestral", "euler_ancestral_cfg_pp", "heun", "heunpp2", "exp_heun_2_x0", "exp_heun_2_x0_sde", "dpm_2", "dpm_2_ancestral",
                   "lms", "dpm_fast", "dpm_adaptive", "dpmpp_2s_ancestral", "dpmpp_2s_ancestral_cfg_pp", "dpmpp_sde", "dpmpp_sde_gpu",
