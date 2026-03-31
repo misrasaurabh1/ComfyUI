@@ -413,20 +413,25 @@ def simple_scheduler(model_sampling, steps):
 
 def ddim_scheduler(model_sampling, steps):
     s = model_sampling
+    sigmas = s.sigmas
     sigs = []
     x = 1
-    if math.isclose(float(s.sigmas[x]), 0, abs_tol=0.00001):
+    # Slightly rearranged to minimize checks and variable reuse
+    if math.isclose(float(sigmas[x]), 0, abs_tol=0.00001):
         steps += 1
         sigs = []
     else:
         sigs = [0.0]
 
-    ss = max(len(s.sigmas) // steps, 1)
-    while x < len(s.sigmas):
-        sigs += [float(s.sigmas[x])]
-        x += ss
-    sigs = sigs[::-1]
-    return torch.FloatTensor(sigs)
+    ss = max(len(sigmas) // steps, 1)
+    # Collect values in a preallocated manner
+    result = []
+    for idx in range(x, len(sigmas), ss):
+        result.append(float(sigmas[idx]))
+    result.reverse()
+    if sigs:
+        result.append(0.0)
+    return torch.FloatTensor(result)
 
 def normal_scheduler(model_sampling, steps, sgm=False, floor=False):
     s = model_sampling
