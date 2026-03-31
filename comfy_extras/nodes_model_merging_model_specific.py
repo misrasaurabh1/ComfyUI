@@ -57,21 +57,24 @@ class ModelMergeSD3_2B(comfy_extras.nodes_model_merging.ModelMergeBlocks):
 
     @classmethod
     def INPUT_TYPES(s):
-        arg_dict = { "model1": ("MODEL",),
-                              "model2": ("MODEL",)}
-
+        # Single allocation for argument tuple
         argument = ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01})
 
-        arg_dict["pos_embed."] = argument
-        arg_dict["x_embedder."] = argument
-        arg_dict["context_embedder."] = argument
-        arg_dict["y_embedder."] = argument
-        arg_dict["t_embedder."] = argument
+        # Initialize directly with all keys; avoids extra assignments
+        arg_dict = {
+            "model1": ("MODEL",),
+            "model2": ("MODEL",),
+            "pos_embed.": argument,
+            "x_embedder.": argument,
+            "context_embedder.": argument,
+            "y_embedder.": argument,
+            "t_embedder.": argument,
+            "final_layer.": argument,
+        }
 
+        # Use f-string for better performance and readability
         for i in range(24):
-            arg_dict["joint_blocks.{}.".format(i)] = argument
-
-        arg_dict["final_layer."] = argument
+            arg_dict[f"joint_blocks.{i}."] = argument
 
         return {"required": arg_dict}
 
