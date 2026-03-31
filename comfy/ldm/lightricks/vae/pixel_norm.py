@@ -9,4 +9,6 @@ class PixelNorm(nn.Module):
         self.eps = eps
 
     def forward(self, x):
-        return x / torch.sqrt(torch.mean(x**2, dim=self.dim, keepdim=True) + self.eps)
+        # Use torch.square for efficiency and clamp denominator for numerical safety
+        denom = torch.mean(x.square(), dim=self.dim, keepdim=True).clamp_min(self.eps)
+        return x / denom.sqrt()
