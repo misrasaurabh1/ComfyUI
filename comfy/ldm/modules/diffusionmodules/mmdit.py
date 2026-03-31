@@ -252,8 +252,10 @@ class VectorEmbedder(nn.Module):
 
 
 def split_qkv(qkv, head_dim):
-    qkv = qkv.reshape(qkv.shape[0], qkv.shape[1], 3, -1, head_dim).movedim(2, 0)
-    return qkv[0], qkv[1], qkv[2]
+    # Fast QKV split using reshape and efficient splitting
+    qkv = qkv.reshape(qkv.shape[0], qkv.shape[1], 3, -1, head_dim)
+    q, k, v = qkv.unbind(dim=2)
+    return q, k, v
 
 
 class SelfAttention(nn.Module):
