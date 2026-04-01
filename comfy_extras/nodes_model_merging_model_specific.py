@@ -4,24 +4,28 @@ class ModelMergeSD1(comfy_extras.nodes_model_merging.ModelMergeBlocks):
     CATEGORY = "advanced/model_merging/model_specific"
     @classmethod
     def INPUT_TYPES(s):
-        arg_dict = { "model1": ("MODEL",),
-                              "model2": ("MODEL",)}
-
+        # Group all argument keys
+        arg_dict = {
+            "model1": ("MODEL",),
+            "model2": ("MODEL",),
+            "time_embed.": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01}),
+            "label_emb.": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01}),
+            "out.": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01}),
+        }
         argument = ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0, "step": 0.01})
 
-        arg_dict["time_embed."] = argument
-        arg_dict["label_emb."] = argument
+        # Use local variables and a list to avoid repeated tuple construction
+        # Precompute the string formats
+        input_blocks = [f"input_blocks.{i}." for i in range(12)]
+        middle_blocks = [f"middle_block.{i}." for i in range(3)]
+        output_blocks = [f"output_blocks.{i}." for i in range(12)]
 
-        for i in range(12):
-            arg_dict["input_blocks.{}.".format(i)] = argument
-
-        for i in range(3):
-            arg_dict["middle_block.{}.".format(i)] = argument
-
-        for i in range(12):
-            arg_dict["output_blocks.{}.".format(i)] = argument
-
-        arg_dict["out."] = argument
+        for name in input_blocks:
+            arg_dict[name] = argument
+        for name in middle_blocks:
+            arg_dict[name] = argument
+        for name in output_blocks:
+            arg_dict[name] = argument
 
         return {"required": arg_dict}
 
