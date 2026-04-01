@@ -2,6 +2,8 @@ from __future__ import annotations
 from .k_diffusion import sampling as k_diffusion_sampling
 from .extra_samplers import uni_pc
 from typing import TYPE_CHECKING, Callable, NamedTuple
+import math
+
 if TYPE_CHECKING:
     from comfy.model_patcher import ModelPatcher
     from comfy.model_base import BaseModel
@@ -576,36 +578,81 @@ def create_cond_with_same_area_if_none(conds, c):
     if 'area' not in c:
         return
 
-    def area_inside(a, area_cmp):
-        a = add_area_dims(a, len(area_cmp) // 2)
-        area_cmp = add_area_dims(area_cmp, len(a) // 2)
+    c_area = c['area']
+    c_area_len = len(c_area)
+    c_area_l = c_area_len // 2
 
-        a_l = len(a) // 2
-        area_cmp_l = len(area_cmp) // 2
-        for i in range(min(a_l, area_cmp_l)):
-            if a[a_l + i] < area_cmp[area_cmp_l + i]:
+    smallest = None
+    smallest_area = None
+    smallest_area_l = None
+    smallest_area_area = None
+
+    # move area_inside inline
+    def area_inside(a, area_cmp):
+        a_len = len(a)
+        cmp_len = len(area_cmp)
+        a_l = a_len // 2
+        cmp_l = cmp_len // 2
+
+        # avoid in-loop calls if already sized
+        if a_l < cmp_l:
+            # add dims to a
+            a = add_area_dims(a, cmp_l)
+            a_len = len(a)
+            a_l = a_len // 2
+        elif cmp_l < a_l:
+            # add dims to area_cmp
+            area_cmp = add_area_dims(area_cmp, a_l)
+            cmp_len = len(area_cmp)
+            cmp_l = cmp_len // 2
+
+        # a, area_cmp now have same number of dims
+        for i in range(a_l):
+            if a[a_l + i] < area_cmp[cmp_l + i]:
                 return False
-        for i in range(min(a_l, area_cmp_l)):
-            if (a[i] + a[a_l + i]) > (area_cmp[i] + area_cmp[area_cmp_l + i]):
+        for i in range(a_l):
+            if (a[i] + a[a_l + i]) > (area_cmp[i] + area_cmp[cmp_l + i]):
                 return False
         return True
 
-    c_area = c['area']
-    smallest = None
     for x in conds:
         if 'area' in x:
             a = x['area']
+            # fast path: skip area_inside if lengths mismatch, since we always fix below
             if area_inside(c_area, a):
                 if smallest is None:
                     smallest = x
+                    smallest_area = a
+                    smallest_area_l = len(a) // 2
+                    smallest_area_area = None # to be cached on demand
                 elif 'area' not in smallest:
                     smallest = x
+                    smallest_area = a
+                    smallest_area_l = len(a) // 2
+                    smallest_area_area = None
                 else:
-                    if math.prod(smallest['area'][:len(smallest['area']) // 2]) > math.prod(a[:len(a) // 2]):
+                    # Use cached prod if possible, or compute and cache for current smallest
+                    if smallest_area_area is None:
+                        sa = smallest_area
+                        sa_l = smallest_area_l
+                        prod = 1
+                        for i in range(sa_l):
+                            prod *= sa[i]
+                        smallest_area_area = prod
+                    # for current 'a'
+                    this_prod = 1
+                    for i in range(len(a) // 2):
+                        this_prod *= a[i]
+                    if smallest_area_area > this_prod:
                         smallest = x
+                        smallest_area = a
+                        smallest_area_l = len(a) // 2
+                        smallest_area_area = this_prod
         else:
             if smallest is None:
                 smallest = x
+                # smallest_area etc do not matter
+
     if smallest is None:
         return
     if 'area' in smallest:
@@ -614,7 +661,7 @@ def create_cond_with_same_area_if_none(conds, c):
 
     out = c.copy()
     out['model_conds'] = smallest['model_conds'].copy() #TODO: which fields should be copied?
-    conds += [out]
+    conds.append(out)
 
 def calculate_start_end_timesteps(model, conds):
     s = model.model_sampling
