@@ -17,7 +17,8 @@ import comfy.memory_management
 from comfy.utils import model_trange as trange
 
 def append_zero(x):
-    return torch.cat([x, x.new_zeros([1])])
+    # Append a zero to the end of the tensor x
+    return torch.cat([x, torch.zeros([1], device=x.device)])
 
 
 def get_sigmas_karras(n, sigma_min, sigma_max, rho=7., device='cpu'):
@@ -37,8 +38,15 @@ def get_sigmas_exponential(n, sigma_min, sigma_max, device='cpu'):
 
 def get_sigmas_polyexponential(n, sigma_min, sigma_max, rho=1., device='cpu'):
     """Constructs an polynomial in log sigma noise schedule."""
-    ramp = torch.linspace(1, 0, n, device=device) ** rho
-    sigmas = torch.exp(ramp * (math.log(sigma_max) - math.log(sigma_min)) + math.log(sigma_min))
+    # Precompute values to avoid repeated calculations
+    log_sigma_min = math.log(sigma_min)
+    log_sigma_max = math.log(sigma_max)
+    ramp_base = torch.linspace(1, 0, n, device=device)
+    
+    # Perform operations once per tensor ramp, utilizing in-place operations when possible
+    ramp = ramp_base.pow_(rho)
+    sigmas = torch.exp(ramp * (log_sigma_max - log_sigma_min) + log_sigma_min)
+    
     return append_zero(sigmas)
 
 
