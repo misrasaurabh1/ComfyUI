@@ -686,28 +686,25 @@ def apply_empty_x_to_equal_area(conds, uncond, name, uncond_fill_func):
             uncond[temp[1]] = n
 
 def encode_model_conds(model_function, conds, noise, device, prompt_type, **kwargs):
-    for t in range(len(conds)):
-        x = conds[t]
-        params = x.copy()
-        params["device"] = device
-        params["noise"] = noise
-        default_width = None
-        if len(noise.shape) >= 4: #TODO: 8 multiple should be set by the model
-            default_width = noise.shape[3] * 8
-        params["width"] = params.get("width", default_width)
-        params["height"] = params.get("height", noise.shape[2] * 8)
-        params["prompt_type"] = params.get("prompt_type", prompt_type)
-        for k in kwargs:
-            if k not in params:
-                params[k] = kwargs[k]
+    noise_shape = noise.shape
+    noise_shape_2 = noise_shape[2] * 8
+    default_width = noise_shape[3] * 8 if len(noise_shape) >= 4 else None
+
+    for x in conds:
+        params = {
+            "device": device,
+            "noise": noise,
+            "width": x.get("width", default_width),
+            "height": x.get("height", noise_shape_2),
+            "prompt_type": x.get("prompt_type", prompt_type),
+        }
+        params.update(kwargs)
 
         out = model_function(**params)
-        x = x.copy()
-        model_conds = x['model_conds'].copy()
-        for k in out:
-            model_conds[k] = out[k]
+        model_conds = x['model_conds']
+        model_conds.update(out)
         x['model_conds'] = model_conds
-        conds[t] = x
+
     return conds
 
 class Sampler:
