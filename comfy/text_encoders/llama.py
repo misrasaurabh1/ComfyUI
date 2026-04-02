@@ -791,6 +791,9 @@ class BaseLlama:
         self.model.embed_tokens = embeddings
 
     def forward(self, input_ids, *args, **kwargs):
+        # Direct call if there are no additional args or kwargs for fastest execution
+        if not args and not kwargs:
+            return self.model(input_ids)
         return self.model(input_ids, *args, **kwargs)
 
 class BaseGenerate:
