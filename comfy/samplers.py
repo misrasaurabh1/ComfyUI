@@ -2,6 +2,9 @@ from __future__ import annotations
 from .k_diffusion import sampling as k_diffusion_sampling
 from .extra_samplers import uni_pc
 from typing import TYPE_CHECKING, Callable, NamedTuple
+import math
+import torch
+
 if TYPE_CHECKING:
     from comfy.model_patcher import ModelPatcher
     from comfy.model_base import BaseModel
@@ -490,9 +493,17 @@ def linear_quadratic_schedule(model_sampling, steps, threshold_noise=0.025, line
 
 # Referenced from https://github.com/AUTOMATIC1111/stable-diffusion-webui/pull/15608
 def kl_optimal_scheduler(n: int, sigma_min: float, sigma_max: float) -> torch.Tensor:
-    adj_idxs = torch.arange(n, dtype=torch.float).div_(n - 1)
-    sigmas = adj_idxs.new_zeros(n + 1)
-    sigmas[:-1] = (adj_idxs * math.atan(sigma_min) + (1 - adj_idxs) * math.atan(sigma_max)).tan_()
+    adj_idxs = torch.arange(n, dtype=torch.float) / (n - 1)
+    # Precompute constants outside the loop
+    atan_sigma_min = math.atan(sigma_min)
+    atan_sigma_max = math.atan(sigma_max)
+    
+    sigmas = torch.empty(n + 1, dtype=torch.float)
+    
+    adj_idxs_atan = adj_idxs * (atan_sigma_min - atan_sigma_max) + atan_sigma_max
+    sigmas[:-1] = adj_idxs_atan.tan_()
+    sigmas[-1] = 0  # sigmas[-1] is initially zero as in the original code
+    
     return sigmas
 
 def get_mask_aabb(masks):
