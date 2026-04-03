@@ -14,7 +14,12 @@ from torch.utils import data
 
 def hf_datasets_augs_helper(examples, transform, image_key, mode='RGB'):
     """Apply passed in transforms for HuggingFace Datasets."""
-    images = [transform(image.convert(mode)) for image in examples[image_key]]
+    imgs = examples[image_key]
+    # Only convert if needed
+    images = [
+        transform(img if img.mode == mode else img.convert(mode))
+        for img in imgs
+    ]
     return {image_key: images}
 
 
